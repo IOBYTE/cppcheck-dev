@@ -65,14 +65,17 @@ def test_props_dirs_defines_and_standard():
     with open(dump_b, 'rt') as f:
         dump_b_content = f.read()
 
-    # ProjA imports shared/shared.props (which itself imports common/common.props), and
-    # also sets its own PROJA_DEFINE - all three must be present, most specific first
-    assert 'cfg="_WIN32=1;_WIN64=1;PROJA_DEFINE=1;SHARED_DEFINE=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_a_content
+    # ProjA imports shared/shared.props (-> common/common.props) and shared/shared2.props
+    # (-> common/common2.props), and sets its own PROJA_DEFINE.  Defines accumulate most-
+    # specific-first: PROJA_DEFINE, then shared2 chain (SHARED2_DEFINE;COMMON2_DEFINE),
+    # then shared chain (SHARED_DEFINE;COMMON_DEFINE).
+    assert 'cfg="_WIN32=1;_WIN64=1;PROJA_DEFINE=1;SHARED2_DEFINE=1;COMMON2_DEFINE=1;SHARED_DEFINE=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_a_content
     assert '<cpp version="c++17"/>' in dump_a_content
 
-    # ProjB imports common/common.props directly - it must see COMMON_DEFINE, but neither
-    # PROJA_DEFINE nor SHARED_DEFINE, which only ever applied to ProjA
-    assert 'cfg="_WIN32=1;_WIN64=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_b_content
+    # ProjB imports common/common.props and common/common2.props directly - it must see
+    # COMMON2_DEFINE;COMMON_DEFINE (most-specific first), but none of ProjA's defines.
+    assert 'cfg="_WIN32=1;_WIN64=1;COMMON2_DEFINE=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_b_content
     assert '<cpp version="c++17"/>' in dump_b_content
     assert 'PROJA_DEFINE' not in dump_b_content
     assert 'SHARED_DEFINE' not in dump_b_content
+    assert 'SHARED2_DEFINE' not in dump_b_content
