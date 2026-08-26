@@ -1838,7 +1838,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
 
             Standards::cppstd_t cppstd = Standards::CPPLatest;
             const std::string &languageStandard = compile.languageStandard;
-            if (languageStandard == "stdcpp14")
+            if (languageStandard == "stdcpp11")
+                cppstd = Standards::CPP11;
+            else if (languageStandard == "stdcpp14")
                 cppstd = Standards::CPP14;
             else if (languageStandard == "stdcpp17")
                 cppstd = Standards::CPP17;
@@ -1876,7 +1878,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
 
             std::string defines = fs.defines;
-            defines += (";" + compile.preprocessorDefinitions);
+            if (!compile.preprocessorDefinitions.empty())
+                defines += (";" + compile.preprocessorDefinitions);
             fsSetDefines(fs, defines);
             fsSetIncludePaths(fs, projectDir, toStringList(variables["IncludePath"]), variables);
             fs.systemIncludePaths = std::move(fs.includePaths);
