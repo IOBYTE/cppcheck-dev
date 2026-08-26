@@ -769,7 +769,7 @@ namespace {
 
             if (std::isdigit(static_cast<unsigned char>(mCondition[mPos])) ||
                 (mCondition[mPos] == '-' &&
-                mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
+                 mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
                 const std::size_t begin = mPos++;
 
                 while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
@@ -1731,7 +1731,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         ForceImportAfterCppProps
         ForceImportBeforeCppTargets
         ForceImportAfterCppTargets
-*/
+ */
     }
 
     bool first = true;
