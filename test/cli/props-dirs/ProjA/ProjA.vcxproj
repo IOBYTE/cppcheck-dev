@@ -19,6 +19,7 @@
   <!-- Pulls in shared/shared.props, which itself pulls in common/common.props -->
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(MSBuildThisFileDirectory)..\shared\shared.props" />
+    <Import Project="..\shared\shared2.props" />
   </ImportGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
