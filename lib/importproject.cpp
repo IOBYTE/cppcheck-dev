@@ -1862,15 +1862,17 @@ bool ImportProject::importVcxproj(const std::string &filename,
             else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions512")
                 fs.defines += ";__AVX512__";
 
-            auto it = variables.find("CharacterSet");
-            bool useUnicode = it != variables.end() && it->second == "Unicode";
+            const auto charSetIt = variables.find("CharacterSet");
+            const std::string charSet = (charSetIt != variables.end()) ? charSetIt->second : std::string();
 
             const auto useOfMfcIt = variables.find("UseOfMfc");
             fs.useMfc = useOfMfcIt != variables.end() && !useOfMfcIt->second.empty() &&
                         caseInsensitiveStringCompare(useOfMfcIt->second, "false") != 0;
 
-            if (useUnicode) {
+            if (charSet == "Unicode") {
                 fs.defines += ";UNICODE=1;_UNICODE=1";
+            } else if (charSet == "MultiByte") {
+                fs.defines += ";_MBCS=1";
             }
 
             std::string defines = fs.defines;
