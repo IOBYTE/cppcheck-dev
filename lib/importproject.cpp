@@ -247,7 +247,7 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
-static void expandMSBuildVariables(std::string &s, const VariablesMap &variables)
+static void expandMSBuildVariables(std::string &s, VariablesMap &variables)
 {
     // Use multiple passes with a "no change" termination guard.
     // A cap of 50 prevents infinite loops from genuinely cyclic variables (A=$(B), B=$(A)).
@@ -260,10 +260,16 @@ static void expandMSBuildVariables(std::string &s, const VariablesMap &variables
             if (end == std::string::npos)
                 break;
             const std::string var = s.substr(pos + 2, end - pos - 2);
-            const auto it = variables.find(var);
+            auto it = variables.find(var);
             if (it == variables.end()) {
-                pos = end + 1;  // unknown variable — skip and keep going
-                continue;
+                // fall back to environment variable and cache for future passes
+                const char *envValue = std::getenv(var.c_str());
+                if (!envValue) {
+                    pos = end + 1;  // unknown — skip and keep going
+                    continue;
+                }
+                variables[var] = envValue;
+                it = variables.find(var);
             }
             s.replace(pos, end - pos + 1, it->second);
             pos += it->second.size();  // advance past the replacement
@@ -1317,17 +1323,6 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
 bool ImportProject::simplifyPathWithVariables(std::string &s, VariablesMap &variables)
 {
     expandMSBuildVariables(s, variables);
-    // env var fallback for still-unresolved references
-    std::string::size_type start = 0;
-    while ((start = s.find("$(")) != std::string::npos) {
-        const std::string::size_type end = s.find(')', start);
-        if (end == std::string::npos) break;
-        const std::string var = s.substr(start + 2, end - start - 2);
-        const char *envValue = std::getenv(var.c_str());
-        if (!envValue) break;
-        variables[var] = envValue;
-        s.replace(start, end - start + 1, envValue);
-    }
     checkUnexpandedExpressions(s, "path");
     if (s.find("$(") != std::string::npos)
         return false;
