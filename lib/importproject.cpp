@@ -446,8 +446,10 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
     }
 
     const std::string solutionDir = toAbsolute(path);
-    mVariables["SolutionDir"] = solutionDir;
-    mVariables["VisualStudioVersion"] = "17";
+    VariablesMap solutionVariables;
+    solutionVariables["SolutionDir"] = solutionDir;
+    solutionVariables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(path);
+    solutionVariables["VisualStudioVersion"] = "17";
 
     bool found = false;
     while (std::getline(istr,line)) {
@@ -469,6 +471,8 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
         vcxproj = Path::toNativeSeparators(std::move(vcxproj));
         vcxproj = toAbsolute(vcxproj, solutionDir, mVariables);
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
+
+        mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
             errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
             return false;
@@ -504,8 +508,10 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
         return false;
     }
 
-    mVariables["SolutionDir"] = toAbsolute(Path::getPathFromFilename(filename));
-    mVariables["VisualStudioVersion"] = "17";
+    VariablesMap solutionVariables;
+    solutionVariables["SolutionDir"] = toAbsolute(Path::getPathFromFilename(filename));
+    solutionVariables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(filename);
+    solutionVariables["VisualStudioVersion"] = "17";
 
     bool found = false;
 
@@ -523,6 +529,8 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
         vcxproj = toAbsolute(vcxproj, mVariables["SolutionDir"], mVariables);
 
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
+
+        mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
             errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
             return false;
@@ -1368,15 +1376,15 @@ void ImportProject::fsSetIncludePaths(FileSettings &fs, const std::string &basep
 
 void ImportProject::addProperty(const tinyxml2::XMLElement *node, VariablesMap &variables) {
     const char *eName = node->Name();
+    if (!eName || !conditionIsTrue(node, variables))
+        return;
     const char *eText = node->GetText();
-    if (eName && eText && conditionIsTrue(node, variables)) {
-        std::string text(eText);
-        const std::string original = variables[eName];
-        findAndReplace(text, "%(" + std::string(eName) + ")", original);
-        expandMSBuildVariables(text, variables);
-        variables[eName] = text;
-        checkUnexpandedExpressions(text, eName);
-    }
+    std::string text(eText ? eText : "");
+    const std::string original = variables[eName];
+    findAndReplace(text, "%(" + std::string(eName) + ")", original);
+    expandMSBuildVariables(text, variables);
+    variables[eName] = text;
+    checkUnexpandedExpressions(text, eName);
 }
 
 std::string ImportProject::getProperty(const tinyxml2::XMLElement *node, VariablesMap &variables, const std::string &original) {
@@ -1630,44 +1638,23 @@ bool ImportProject::importVcxproj(const std::string &filename,
         return false;
     }
 
-    const auto solutionDirIt = variables.find("SolutionDir");
-    const bool hasSolutionDir = solutionDirIt != variables.end();
-    const std::string solutionDir = hasSolutionDir ? solutionDirIt->second : std::string();
-    const auto vsVersionIt = variables.find("VisualStudioVersion");
-    const std::string vsVersion = (vsVersionIt != variables.end()) ? vsVersionIt->second : "17";
-    variables.clear();
-    if (hasSolutionDir)
-        variables["SolutionDir"] = solutionDir;
-    variables["VisualStudioVersion"] = vsVersion;
+    variables.emplace("VisualStudioVersion", "17.0");
 
     std::string projectName = Path::stripDirectoryPart(filename);
     findAndReplace(projectName, Path::getFilenameExtension(projectName), "");
     variables["ProjectName"] = projectName;
     variables["MSBuildProjectName"] = projectName;
-    variables["MSBuildProjectExtension"] = Path::getFilenameExtension(filename);
+    variables["MSBuildProjectExtension"] = Path::getFilenameExtensionInLowerCase(filename);
 
     std::string projectDir = Path::simplifyPath(Path::getPathFromFilename(filename));
     variables["ProjectDir"] = projectDir;
     variables.emplace("SolutionDir", projectDir);
+    variables["ProjectExt"] = Path::getFilenameExtensionInLowerCase(filename);
     variables["MSBuildProjectDirectory"] = projectDir;
     variables["MSBuildThisFile"] = Path::stripDirectoryPart(filename);
     variables["MSBuildThisFileDirectory"] = projectDir;
     variables["MSBuildThisFileFullPath"] = Path::simplifyPath(filename);
     variables["MSBuildThisFileExtension"] = Path::getFilenameExtension(filename);
-    // MSBuildToolsVersion: VS2017=15, VS2019=16, VS2022=17, VS2026=18 all report "Current" in the
-    // project file itself; derive the numeric version from VisualStudioVersion captured from the .sln/.slnx.
-    {
-        char *vsVerEnd = nullptr;
-        const int vsVer = static_cast<int>(std::strtol(vsVersion.c_str(), &vsVerEnd, 10));
-        std::string toolsVer;
-        if (vsVer >= 18) toolsVer = "18";         // VS2026+
-        else if (vsVer == 17) toolsVer = "17";    // VS2022
-        else if (vsVer == 16) toolsVer = "16";    // VS2019
-        else if (vsVer == 15) toolsVer = "15";    // VS2017
-        else if (vsVer == 14) toolsVer = "14";    // VS2015
-        else toolsVer = "15";                     // fallback
-        variables["MSBuildToolsVersion"] = toolsVer;
-    }
 
     std::list<ProjectConfiguration> projectConfigurationList;
     std::list<ItemGroupClCompile> compileList;
@@ -1678,6 +1665,11 @@ bool ImportProject::importVcxproj(const std::string &filename,
         errors.emplace_back("Visual Studio project file has no XML root node");
         return false;
     }
+
+    // Read MSBuildToolsVersion directly from <Project ToolsVersion="...">.
+    // "Current" is the standard value for VS2019+ and is the correct fallback.
+    const char *toolsVersion = rootnode->Attribute("ToolsVersion");
+    variables.emplace("MSBuildToolsVersion", toolsVersion ? toolsVersion : "Current");
 
     // find all Visual Studio project configurations
     for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
