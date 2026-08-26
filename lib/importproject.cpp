@@ -591,11 +591,11 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
             break;
         std::stringstream message;
         message << "unexpanded property $("
-            << text.substr(pos + 2, end - pos - 2)
-            << ")"
-            << (context ? " in " : "")
-            << (context ? context : "")
-            << ": " << text << '\n';
+                << text.substr(pos + 2, end - pos - 2)
+                << ")"
+                << (context ? " in " : "")
+                << (context ? context : "")
+                << ": " << text << '\n';
         debugs.emplace_back(message.str());
         pos = end + 1;
     }
@@ -606,11 +606,11 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
             break;
         std::stringstream message;
         message << "unexpanded metadata %("
-            << text.substr(pos + 2, end - pos - 2)
-            << ")"
-            << (context ? " in " : "")
-            << (context ? context : "")
-            << ": " << text << '\n';
+                << text.substr(pos + 2, end - pos - 2)
+                << ")"
+                << (context ? " in " : "")
+                << (context ? context : "")
+                << ": " << text << '\n';
         debugs.emplace_back(message.str());
         pos = end + 1;
     }
@@ -630,16 +630,13 @@ namespace {
 
             if (mPos != mCondition.size()) {
                 if (mCondition[mPos] == ')')
-                    throw std::runtime_error(
-                        "unmatched ')' in condition " + mCondition);
+                    throw std::runtime_error("unmatched ')' in condition " + mCondition);
 
-                throw std::runtime_error(
-                    "Invalid condition: '" + mCondition + "'");
+                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
             }
 
             if (value != "True" && value != "False")
-                throw std::runtime_error(
-                    "Invalid condition: '" + mCondition + "'");
+                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
 
             return value == "True";
         }
@@ -650,8 +647,7 @@ namespace {
         std::size_t mPos = 0;
 
         void skipWhitespace() {
-            while (mPos < mCondition.size() &&
-                std::isspace(static_cast<unsigned char>(mCondition[mPos])))
+            while (mPos < mCondition.size() && std::isspace(static_cast<unsigned char>(mCondition[mPos])))
                 ++mPos;
         }
 
@@ -672,8 +668,7 @@ namespace {
 
             const std::size_t end = mPos + word.size();
             if (end < mCondition.size() &&
-                (std::isalnum(static_cast<unsigned char>(mCondition[end])) ||
-                    mCondition[end] == '_'))
+                (std::isalnum(static_cast<unsigned char>(mCondition[end])) || mCondition[end] == '_'))
                 return false;
 
             mPos = end;
@@ -687,8 +682,7 @@ namespace {
             if (text == ")")
                 throw std::runtime_error("'(' without closing ')'!");
 
-            throw std::runtime_error(
-                "Expected '" + text + "' in condition '" + mCondition + "'");
+            throw std::runtime_error("Expected '" + text + "' in condition '" + mCondition + "'");
         }
 
         std::string parseOr() {
@@ -775,8 +769,7 @@ namespace {
 
             if (std::isdigit(static_cast<unsigned char>(mCondition[mPos])) ||
                 (mCondition[mPos] == '-' &&
-                    mPos + 1 < mCondition.size() &&
-                    std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
+                    mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
                 const std::size_t begin = mPos++;
 
                 while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
@@ -896,8 +889,7 @@ namespace {
             const std::string value = parseValue();
             expect(")");
 
-            return (!value.empty() &&
-                (value.back() == '/' || value.back() == '\\'))
+            return (!value.empty() && (value.back() == '/' || value.back() == '\\'))
                 ? "True"
                 : "False";
         }
@@ -1431,7 +1423,6 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                                                          const std::string &projectDir,
                                                          VariablesMap &variables,
                                                          std::list<ItemGroupClCompile> &compileList) {
-
     const char *include = node->Attribute("Include");
     if (!include)
         return ImportResult::NotFound;
@@ -1525,7 +1516,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     tinyxml2::XMLDocument doc;
     if (doc.LoadFile(filename.c_str()) != tinyxml2::XML_SUCCESS)
         return ImportResult::NotFound;
- 
+
     const tinyxml2::XMLElement * const rootnode = doc.FirstChildElement();
     if (rootnode == nullptr)
         return ImportResult::NotValid;
@@ -1669,12 +1660,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
     {
         const int vsVer = std::atoi(vsVersion.c_str());
         std::string toolsVer;
-        if (vsVer >= 18)       toolsVer = "18";   // VS2026+
+        if (vsVer >= 18) toolsVer = "18";         // VS2026+
         else if (vsVer == 17)  toolsVer = "17";   // VS2022
         else if (vsVer == 16)  toolsVer = "16";   // VS2019
         else if (vsVer == 15)  toolsVer = "15";   // VS2017
         else if (vsVer == 14)  toolsVer = "14";   // VS2015
-        else                   toolsVer = "15";   // fallback
+        else toolsVer = "15";                     // fallback
         variables["MSBuildToolsVersion"] = toolsVer;
     }
 
