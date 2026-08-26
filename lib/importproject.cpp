@@ -769,7 +769,7 @@ namespace {
 
             if (std::isdigit(static_cast<unsigned char>(mCondition[mPos])) ||
                 (mCondition[mPos] == '-' &&
-                    mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
+                mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
                 const std::size_t begin = mPos++;
 
                 while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
@@ -1662,10 +1662,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
         const int vsVer = std::atoi(vsVersion.c_str());
         std::string toolsVer;
         if (vsVer >= 18) toolsVer = "18";         // VS2026+
-        else if (vsVer == 17)  toolsVer = "17";   // VS2022
-        else if (vsVer == 16)  toolsVer = "16";   // VS2019
-        else if (vsVer == 15)  toolsVer = "15";   // VS2017
-        else if (vsVer == 14)  toolsVer = "14";   // VS2015
+        else if (vsVer == 17) toolsVer = "17";    // VS2022
+        else if (vsVer == 16) toolsVer = "16";    // VS2019
+        else if (vsVer == 15) toolsVer = "15";    // VS2017
+        else if (vsVer == 14) toolsVer = "14";    // VS2015
         else toolsVer = "15";                     // fallback
         variables["MSBuildToolsVersion"] = toolsVer;
     }
