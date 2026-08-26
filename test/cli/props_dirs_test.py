@@ -18,10 +18,10 @@ from testutils import cppcheck
 
 __script_dir = os.path.dirname(os.path.abspath(__file__))
 
-__ERR_A = ('%s:10:14: error: Division by zero. [zerodiv]\n'
+__ERR_A = ('%s:14:14: error: Division by zero. [zerodiv]\n'
            '    return x / 0;\n'
            '             ^\n') % os.path.join('props-dirs', 'ProjA', 'a.cpp')
-__ERR_B = ('%s:10:14: error: Division by zero. [zerodiv]\n'
+__ERR_B = ('%s:14:14: error: Division by zero. [zerodiv]\n'
            '    return y / 0;\n'
            '             ^\n') % os.path.join('props-dirs', 'ProjB', 'b.cpp')
 
