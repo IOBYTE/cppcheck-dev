@@ -1477,6 +1477,9 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     std::string file = toAbsolute(projectAttribute, projectDir, variables);
     std::string extension = Path::getFilenameExtensionInLowerCase(file);
     if (extension == ".props" || extension == ".targets") {
+        const char *sdk = node->Attribute("Sdk");
+        if (sdk)
+            return ImportResult::NotResolvable;
         ImportResult result = importPropsOrTargets(file, variables, projectConfigurationList, importStack);
         if (result > ImportResult::NotResolvable) {
             errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
@@ -1523,7 +1526,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
         return ImportResult::NotValid;
 
     MSBuildThis msBuildThis(filename, variables);
-    std::string propsDir = Path::getAbsoluteFilePath(filename);
+    std::string propsDir = Path::getPathFromFilename(filename);
 
     ImportResult ret = ImportResult::Ok;
     for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); ret != ImportResult::Cycle && node; node = node->NextSiblingElement()) {
@@ -1659,7 +1662,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // MSBuildToolsVersion: VS2017=15, VS2019=16, VS2022=17, VS2026=18 all report "Current" in the
     // project file itself; derive the numeric version from VisualStudioVersion captured from the .sln/.slnx.
     {
-        const int vsVer = std::atoi(vsVersion.c_str());
+        char *vsVerEnd = nullptr;
+        const int vsVer = static_cast<int>(std::strtol(vsVersion.c_str(), &vsVerEnd, 10));
         std::string toolsVer;
         if (vsVer >= 18) toolsVer = "18";         // VS2026+
         else if (vsVer == 17) toolsVer = "17";    // VS2022
@@ -1669,8 +1673,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
         else toolsVer = "15";                     // fallback
         variables["MSBuildToolsVersion"] = toolsVer;
     }
-
-    VariablesMap originalVariables = variables;
 
     std::list<ProjectConfiguration> projectConfigurationList;
     std::list<ItemGroupClCompile> compileList;
@@ -1733,6 +1735,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
         ForceImportAfterCppTargets
  */
     }
+
+    VariablesMap originalVariables = variables;
 
     bool first = true;
 
