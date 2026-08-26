@@ -780,7 +780,7 @@ namespace {
 
             const std::size_t begin = mPos;
             while (mPos < mCondition.size()) {
-                const unsigned char c = static_cast<unsigned char>(mCondition[mPos]);
+                const auto c = static_cast<unsigned char>(mCondition[mPos]);
                 if (!std::isalnum(c) && c != '_' && c != '-' && c != '.')
                     break;
                 ++mPos;
@@ -807,7 +807,7 @@ namespace {
             throw std::runtime_error("Can not tokenize condition");
         }
 
-        bool parseInteger(const std::string &s, long &value)
+        static bool parseInteger(const std::string &s, long &value)
         {
             if (s.empty())
                 return false;
@@ -831,7 +831,7 @@ namespace {
             skipWhitespace();
             const std::size_t begin = mPos;
             while (mPos < mCondition.size()) {
-                const unsigned char c = static_cast<unsigned char>(mCondition[mPos]);
+                const auto c = static_cast<unsigned char>(mCondition[mPos]);
                 if (!std::isalnum(c) && c != '_' && c != '-')
                     break;
                 ++mPos;
@@ -925,9 +925,9 @@ namespace {
             return result;
         }
 
-        std::string applyMethod(std::string value,
-                                const std::string &method,
-                                const std::vector<std::string> &args) {
+        static std::string applyMethod(std::string value,
+                                       const std::string &method,
+                                       const std::vector<std::string> &args) {
             if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
                 if (!args.empty())
                     throw std::runtime_error("ToUpper takes no arguments");
@@ -1027,7 +1027,7 @@ namespace {
                     static_cast<unsigned long>(start) > value.size())
                     throw std::runtime_error("Substring start index out of range");
 
-                const std::size_t index = static_cast<std::size_t>(start);
+                const auto index = static_cast<std::size_t>(start);
 
                 if (args.size() == 1)
                     return value.substr(index);
@@ -1062,8 +1062,8 @@ namespace {
             throw std::runtime_error("Unhandled method '" + method + "'");
         }
 
-        int compareVersions(const std::vector<int> &lhs,
-                            const std::vector<int> &rhs) {
+        static int compareVersions(const std::vector<int> &lhs,
+                                   const std::vector<int> &rhs) {
             const std::size_t count = std::max(lhs.size(), rhs.size());
 
             for (std::size_t i = 0; i < count; ++i) {
@@ -1083,7 +1083,7 @@ namespace {
             return 0;
         }
 
-        bool compareVersionResult(int result, const std::string &op) {
+        static bool compareVersionResult(int result, const std::string &op) {
             if (op == "<")
                 return result < 0;
             if (op == ">")
@@ -1287,8 +1287,8 @@ namespace {
         std::unordered_set<std::string> &mStack;
         const std::string mKey;
 
-        ImportStackGuard(std::unordered_set<std::string> &stack, const std::string &key)
-            : mStack(stack), mKey(key) {}
+        ImportStackGuard(std::unordered_set<std::string> &stack, const std::string key)
+            : mStack(stack), mKey(std::move(key)) {}
 
         ~ImportStackGuard() {
             mStack.erase(mKey);
@@ -1396,7 +1396,7 @@ std::string ImportProject::getProperty(const tinyxml2::XMLElement *node, Variabl
     return text;
 }
 
-const std::string &ImportProject::importResultStr(ImportProject::ImportResult result) const {
+const std::string &ImportProject::importResultStr(ImportProject::ImportResult result) {
     static std::string ok("ok");
     static std::string notResolvable("Not Resolvable");
     static std::string notFound("Not Found");
@@ -1481,7 +1481,8 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         if (result > ImportResult::NotResolvable) {
             errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
             return result;
-        } else if (result == ImportResult::NotResolvable) {
+        }
+        if (result == ImportResult::NotResolvable) {
             debugs.emplace_back("Could not import  \"" + file + "\" - " + importResultStr(result));
         }
     } else {
@@ -1724,13 +1725,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
         if (importPropsOrTargets(directoryBuildTargets, variables, projectConfigurationList, importStack) > ImportResult::NotResolvable) {
             errors.emplace_back("Could not load targets \"" + directoryBuildTargets + "\" - it may be missing, invalid, or part of a circular import");
         }
-#if 0 // fixme
+/* fixme
         ForceImportBeforeCppProps
         ForceImportAfterCppDefaultProps
         ForceImportAfterCppProps
         ForceImportBeforeCppTargets
         ForceImportAfterCppTargets
-#endif
+*/
     }
 
     bool first = true;
@@ -1786,7 +1787,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                 if (result > ImportResult::NotResolvable) {
                                     errors.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
                                     return false;
-                                } else if (result == ImportResult::NotResolvable) {
+                                }
+                                if (result == ImportResult::NotResolvable) {
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
                                 }
                             } else {

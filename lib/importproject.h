@@ -120,7 +120,7 @@ public:
 
     Type import(const std::string &filename, Settings *settings=nullptr, Suppressions *supprs=nullptr);
 
-    const std::string &importResultStr(ImportProject::ImportResult result) const;
+    static const std::string &importResultStr(ImportProject::ImportResult result);
 
 protected:
     bool importCompileCommands(std::istream &istr);
@@ -157,7 +157,7 @@ private:
     bool importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters);
     bool importVcxproj(const std::string &filename, VariablesMap &variables, const std::vector<std::string> &fileFilters);
 
-    ImportResult importPropsOrTargets(const std::string &props,
+    ImportResult importPropsOrTargets(const std::string &file,
                                       VariablesMap &variables,
                                       std::list<ProjectConfiguration> &projectConfigurationList,
                                       std::unordered_set<std::string> &importStack);
@@ -180,7 +180,7 @@ private:
     void addProperty(const tinyxml2::XMLElement *node, VariablesMap &variables);
     std::string getProperty(const tinyxml2::XMLElement *node, VariablesMap &variables, const std::string &original);
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, VariablesMap &variables);
-    std::string toAbsolute(const std::string &path);
+    static std::string toAbsolute(const std::string &path);
 
     std::string mPath;
     std::set<std::string> mAllVSConfigs;
