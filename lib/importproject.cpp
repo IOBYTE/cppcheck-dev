@@ -1184,7 +1184,7 @@ namespace {
         return ConditionParser(condition, variables).parse();
     }
 
-    bool conditionIsTrue(const tinyxml2::XMLElement *node,  VariablesMap &variables) {
+    bool conditionIsTrue(const tinyxml2::XMLElement *node,  const VariablesMap &variables) {
         const char *condAttr = node->Attribute("Condition");
         if (!condAttr)
             return true;
@@ -1255,7 +1255,7 @@ namespace {
             size_t lastSlash = currentDir.find_last_of('/');
             if (lastSlash == std::string::npos)
                 break;
-            currentDir = currentDir.substr(0, lastSlash);
+            currentDir.resize(lastSlash);
         }
 
         return "";
@@ -1269,8 +1269,8 @@ namespace {
         std::string thisFileDir;
         std::string thisFileFullPath;
 
-        MSBuildThis(const std::string &filename, VariablesMap &variables) : variables(variables) {
-            thisFile = variables["MSBuildThisFile"];
+        MSBuildThis(const std::string &filename, VariablesMap &variables)
+            : variables(variables), thisFile(variables["MSBuildThisFile"]) {           
             variables["MSBuildThisFile"] = Path::stripDirectoryPart(filename);
 
             thisFileDir = variables["MSBuildThisFileDirectory"];
@@ -1532,7 +1532,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     std::string propsDir = Path::getPathFromFilename(filename);
 
     ImportResult ret = ImportResult::Ok;
-    for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); ret != ImportResult::Cycle && node; node = node->NextSiblingElement()) {
+    for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
         if (hasName(node, "ImportGroup", variables)) {
             // Accept any <ImportGroup> (PropertySheets, Shared, unlabeled) — .targets files
             // commonly use unlabeled or differently-labeled groups for transitive imports.
@@ -1541,9 +1541,12 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
                                           (std::strcmp(label, "PropertySheets") == 0) ||
                                           (std::strcmp(label, "Shared") == 0);
             if (isPropertySheets) {
-                for (const tinyxml2::XMLElement *importGroup = node->FirstChildElement(); ret != ImportResult::Cycle && importGroup; importGroup = importGroup->NextSiblingElement()) {
-                    if (hasNameAndAttribute(importGroup, "Import", "Project", variables))
-                        importProject(importGroup, propsDir, variables, projectConfigurationList, importStack);
+                for (const tinyxml2::XMLElement *importGroup = node->FirstChildElement(); importGroup; importGroup = importGroup->NextSiblingElement()) {
+                    if (hasNameAndAttribute(importGroup, "Import", "Project", variables)) {
+                        ImportResult result = importProject(importGroup, propsDir, variables, projectConfigurationList, importStack);
+                        if (result > ImportResult::NotResolvable)
+                            return result;
+                    }
                 }
             }
         } else if (hasName(node, "PropertyGroup", variables)) {
@@ -1566,8 +1569,9 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
                 }
             }
         } else if (hasNameAndAttribute(node, "Import", "Project", variables)) {
-            if (importProject(node, propsDir, variables, projectConfigurationList, importStack) > ImportResult::NotResolvable)
-                break;
+            ImportResult result = importProject(node, propsDir, variables, projectConfigurationList, importStack);
+            if (result > ImportResult::NotResolvable)
+                return result;
         }
     }
 
