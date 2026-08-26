@@ -456,7 +456,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
         if (startsWith(line, "VisualStudioVersion = ")) {
             const std::string ver = line.substr(std::strlen("VisualStudioVersion = "));
             const std::string::size_type dot = ver.find('.');
-            mVariables["VisualStudioVersion"] = (dot != std::string::npos) ? ver.substr(0, dot) : ver;
+            solutionVariables["VisualStudioVersion"] = (dot != std::string::npos) ? ver.substr(0, dot) : ver;
             continue;
         }
         if (!startsWith(line,"Project("))
@@ -469,7 +469,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
             continue;
         std::string vcxproj(line.substr(pos1+1, pos-pos1+7));
         vcxproj = Path::toNativeSeparators(std::move(vcxproj));
-        vcxproj = toAbsolute(vcxproj, solutionDir, mVariables);
+        vcxproj = toAbsolute(vcxproj, solutionDir, solutionVariables);
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
 
         mVariables = solutionVariables;
@@ -526,7 +526,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
         if (Path::getFilenameExtensionInLowerCase(vcxproj) != ".vcxproj")
             return true; // skip other project types
 
-        vcxproj = toAbsolute(vcxproj, mVariables["SolutionDir"], mVariables);
+        vcxproj = toAbsolute(vcxproj, solutionVariables["SolutionDir"], solutionVariables);
 
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
 
@@ -756,6 +756,7 @@ namespace {
 
             static constexpr const char *ops[] = { "==", "!=", "<=", ">=", "<", ">" };
             for (const char *op : ops) {
+                // cppcheck-suppress useStlAlgorithm
                 if (match(op))
                     return compare(lhs, op, parseValue()) ? "True" : "False";
             }
@@ -1270,7 +1271,7 @@ namespace {
         std::string thisFileFullPath;
 
         MSBuildThis(const std::string &filename, VariablesMap &variables)
-            : variables(variables), thisFile(variables["MSBuildThisFile"]) {           
+            : variables(variables), thisFile(variables["MSBuildThisFile"]) {
             variables["MSBuildThisFile"] = Path::stripDirectoryPart(filename);
 
             thisFileDir = variables["MSBuildThisFileDirectory"];
