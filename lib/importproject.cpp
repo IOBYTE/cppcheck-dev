@@ -1192,14 +1192,14 @@ namespace {
         return evalCondition(condAttr, variables);
     }
 
-    bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, VariablesMap &variables) {
+    bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const VariablesMap &variables) {
         const char *name = node->Name();
         if (!name || std::strcmp(nodeName, name) != 0)
             return false;
         return conditionIsTrue(node, variables);
     }
 
-    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, VariablesMap &variables) {
+    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const VariablesMap &variables) {
         const char *name = node->Name();
         const char *attr = node->Attribute(attrName);
         if (!name || !attr || std::strcmp(nodeName, name) != 0)
@@ -1207,7 +1207,7 @@ namespace {
         return conditionIsTrue(node, variables);
     }
 
-    bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, VariablesMap &variables) {
+    bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const VariablesMap &variables) {
         const char *name = node->Name();
         const char *label = node->Attribute("Label");
         if (!name || !label || std::strcmp(nodeName, name) != 0 || std::strcmp(label, nodeAttr) != 0)
@@ -1215,7 +1215,7 @@ namespace {
         return conditionIsTrue(node, variables);
     }
 
-    bool hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, VariablesMap &variables) {
+    bool hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const VariablesMap &variables) {
         const char *name = node->Name();
         if (!name || std::strcmp(nodeName, name) != 0)
             return false;
