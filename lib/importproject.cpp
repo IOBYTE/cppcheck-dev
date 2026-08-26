@@ -1095,7 +1095,7 @@ namespace {
             return false;
         }
 
-        bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
+        static bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
             const auto parseVersion = [](const std::string &s) -> std::vector<int> {
                 if (s.empty())
                     return {};
@@ -1285,9 +1285,9 @@ namespace {
 
     struct ImportStackGuard {
         std::unordered_set<std::string> &mStack;
-        const std::string mKey;
+        std::string mKey;
 
-        ImportStackGuard(std::unordered_set<std::string> &stack, const std::string key)
+        ImportStackGuard(std::unordered_set<std::string> &stack, std::string key)
             : mStack(stack), mKey(std::move(key)) {}
 
         ~ImportStackGuard() {
@@ -1709,7 +1709,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
         }
 
-#if 0 // fixme are these really all of them?
+/* fixme are these really all of them ?
         std::string forceImportAfterCppDefaultProp = variables["ForceImportAfterCppDefaultProp"];
         if (!forceImportAfterCppDefaultProp.empty())
             importPropsOrTargets(forceImportAfterCppDefaultProp, variables, projectConfigurationList, importStack);
@@ -1717,7 +1717,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         std::string forceImportAfterCppProps = variables["ForceImportAfterCppProps"];
         if (!forceImportAfterCppProps.empty())
             importPropsOrTargets(forceImportAfterCppProps, variables, projectConfigurationList, importStack);
-#endif
+**/
     }
 
     std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
@@ -1731,7 +1731,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         ForceImportAfterCppProps
         ForceImportBeforeCppTargets
         ForceImportAfterCppTargets
- */
+**/
     }
 
     bool first = true;

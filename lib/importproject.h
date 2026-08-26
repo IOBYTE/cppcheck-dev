@@ -120,7 +120,7 @@ public:
 
     Type import(const std::string &filename, Settings *settings=nullptr, Suppressions *supprs=nullptr);
 
-    static const std::string &importResultStr(ImportProject::ImportResult result);
+    static const std::string &importResultStr(ImportResult result);
 
 protected:
     bool importCompileCommands(std::istream &istr);
@@ -138,6 +138,7 @@ private:
 
     struct ProjectConfiguration {
         explicit ProjectConfiguration(const tinyxml2::XMLElement *cfg);
+
         std::string name;
         std::string configuration;
         enum : std::uint8_t { Win32, x64, Unknown } platform = Unknown;
