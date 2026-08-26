@@ -1717,7 +1717,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         std::string forceImportAfterCppProps = variables["ForceImportAfterCppProps"];
         if (!forceImportAfterCppProps.empty())
             importPropsOrTargets(forceImportAfterCppProps, variables, projectConfigurationList, importStack);
-**/
+ */
     }
 
     std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
@@ -1731,7 +1731,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         ForceImportAfterCppProps
         ForceImportBeforeCppTargets
         ForceImportAfterCppTargets
-**/
+ */
     }
 
     bool first = true;
