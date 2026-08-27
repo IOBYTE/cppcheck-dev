@@ -428,9 +428,23 @@ bool ImportProject::importCompileCommands(std::istream &istr)
     return true;
 }
 
+void ImportProject::setSolution(const std::string &filename, VariablesMap &variables) {
+    const std::string absolutePath = toAbsolute(filename);
+    variables["SolutionDir"] = Path::getPathFromFilename(absolutePath);
+    variables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(absolutePath);
+    variables["SolutionPath"] = absolutePath;
+    // Path::stripDirectoryPart doesn't work on windows with unix paths
+    variables["SolutionFileName"] = absolutePath.substr(absolutePath.find_last_of("/") + 1, absolutePath.size());
+    std::string temp = variables["SolutionFileName"];
+    findAndReplace(temp, Path::getFilenameExtension(temp), "");
+    variables["SolutionName"] = temp;
+}
+
 bool ImportProject::importSln(std::istream &istr, const std::string &path, const std::vector<std::string> &fileFilters)
 {
     std::string line;
+
+    debugs.clear();
 
     if (!std::getline(istr,line)) {
         errors.emplace_back("Visual Studio solution file is empty");
@@ -445,11 +459,12 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
         }
     }
 
-    const std::string solutionDir = toAbsolute(path);
     VariablesMap solutionVariables;
-    solutionVariables["SolutionDir"] = solutionDir;
-    solutionVariables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(path);
-    solutionVariables["VisualStudioVersion"] = "17";
+    setSolution(path, solutionVariables);
+
+    solutionVariables["VisualStudioVersion"] = "17.0";
+
+    const std::string solutionDir = solutionVariables["SolutionDir"];
 
     bool found = false;
     while (std::getline(istr,line)) {
@@ -490,6 +505,8 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
 
 bool ImportProject::importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters)
 {
+    debugs.clear();
+
     tinyxml2::XMLDocument doc;
     const tinyxml2::XMLError error = doc.LoadFile(filename.c_str());
     if (error != tinyxml2::XML_SUCCESS) {
@@ -509,9 +526,9 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     }
 
     VariablesMap solutionVariables;
-    solutionVariables["SolutionDir"] = toAbsolute(Path::getPathFromFilename(filename));
-    solutionVariables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(filename);
-    solutionVariables["VisualStudioVersion"] = "17";
+    setSolution(filename, solutionVariables);
+
+    solutionVariables["VisualStudioVersion"] = "19.0";
 
     bool found = false;
 
@@ -1263,38 +1280,46 @@ namespace {
     }
 
     struct MSBuildThis {
-        VariablesMap &variables;
+        VariablesMap &variablesMap;
         std::string thisFile;
         std::string thisFileName;
         std::string thisFileExtension;
-        std::string thisFileDir;
+        std::string thisFileDirectory;
+        std::string thisFileDirectoryNoRoot;
         std::string thisFileFullPath;
 
         MSBuildThis(const std::string &filename, VariablesMap &variables)
-            : variables(variables), thisFile(variables["MSBuildThisFile"]) {
-            variables["MSBuildThisFile"] = Path::stripDirectoryPart(filename);
+            : variablesMap(variables)
+            , thisFile(variables.at("MSBuildThisFile"))
+            , thisFileName(variables.at("MSBuildThisFileName"))
+            , thisFileExtension(variables.at("MSBuildThisFileExtension"))
+            , thisFileDirectory(variables.at("MSBuildThisFileDirectory"))
+            , thisFileDirectoryNoRoot(variables.at("MSBuildThisFileDirectoryNoRoot"))
+            , thisFileFullPath(variables.at("MSBuildThisFileFullPath")) {
+            setMSBuildThis(filename, variables);
+        }
 
-            thisFileDir = variables["MSBuildThisFileDirectory"];
+        static void setMSBuildThis(const std::string &filename, VariablesMap &variables) {
+            variables["MSBuildThisFileFullPath"] = filename;
+            std::string temp = filename.substr(filename.find_last_of("/") + 1, filename.size());
+            variables["MSBuildThisFile"] = temp;
+            findAndReplace(temp, Path::getFilenameExtension(temp), "");
+            variables["MSBuildThisFileName"] = temp;
             variables["MSBuildThisFileDirectory"] = Path::simplifyPath(Path::getPathFromFilename(filename));
-
-            thisFileFullPath = variables["MSBuildThisFileFullPath"];
-            variables["MSBuildThisFileFullPath"] = Path::simplifyPath(filename);
-
-            thisFileExtension = variables["MSBuildThisFileExtension"];
+            temp = Path::simplifyPath(Path::getPathFromFilename(filename));
+            std::string::size_type pos = filename.find("/", 0);
+            temp.erase(0, pos + 1);
+            variables["MSBuildThisFileDirectoryNoRoot"] = temp;
             variables["MSBuildThisFileExtension"] = Path::getFilenameExtensionInLowerCase(filename);
-
-            thisFileName = variables["MSBuildThisFileName"];
-            std::string fileName = Path::stripDirectoryPart(filename);
-            findAndReplace(fileName, Path::getFilenameExtension(filename), "");
-            variables["MSBuildThisFileName"] = fileName;
         }
 
         ~MSBuildThis() {
-            variables["MSBuildThisFile"] = thisFile;
-            variables["MSBuildThisFileDirectory"] = thisFileDir;
-            variables["MSBuildThisFileFullPath"] = thisFileFullPath;
-            variables["MSBuildThisFileExtension"] = thisFileExtension;
-            variables["MSBuildThisFileName"] = thisFileName;
+            variablesMap["MSBuildThisFile"] = thisFile;
+            variablesMap["MSBuildThisFileName"] = thisFileName;
+            variablesMap["MSBuildThisFileExtension"] = thisFileExtension;
+            variablesMap["MSBuildThisFileDirectory"] = thisFileDirectory;
+            variablesMap["MSBuildThisFileDirectoryNoRoot"] = thisFileDirectoryNoRoot;
+            variablesMap["MSBuildThisFileFullPath"] = thisFileFullPath;
         }
     };
 
@@ -1449,7 +1474,7 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
             continue;
 
         if (hasName(e1, "ExcludedFromBuild", variables)) {
-            if (std::strcmp(text, "true") == 0) {
+            if (caseInsensitiveStringCompare(text, "true") == 0) {
                 excludedFromBuild = true;
                 break;
             }
@@ -1645,22 +1670,36 @@ bool ImportProject::importVcxproj(const std::string &filename,
 
     variables.emplace("VisualStudioVersion", "17.0");
 
-    std::string projectName = Path::stripDirectoryPart(filename);
-    findAndReplace(projectName, Path::getFilenameExtension(projectName), "");
-    variables["ProjectName"] = projectName;
-    variables["MSBuildProjectName"] = projectName;
-    variables["MSBuildProjectExtension"] = Path::getFilenameExtensionInLowerCase(filename);
-
-    std::string projectDir = Path::simplifyPath(Path::getPathFromFilename(filename));
-    variables["ProjectDir"] = projectDir;
-    variables.emplace("SolutionDir", projectDir);
+    variables["ProjectPath"] = filename;
+    std::string temp = filename.substr(filename.find_last_of("/") + 1, filename.size());
+    variables["ProjectFileName"] = temp;
+    findAndReplace(temp, Path::getFilenameExtension(temp), "");
+    variables["ProjectName"] = temp;
+    temp.resize(std::min(temp.size(), size_t(16)));
+    variables["ShortProjectName"] = temp;
     variables["ProjectExt"] = Path::getFilenameExtensionInLowerCase(filename);
-    variables["MSBuildProjectDirectory"] = projectDir;
-    variables["MSBuildThisFile"] = Path::stripDirectoryPart(filename);
-    variables["MSBuildThisFileDirectory"] = projectDir;
-    variables["MSBuildThisFileFullPath"] = Path::simplifyPath(filename);
-    variables["MSBuildThisFileExtension"] = Path::getFilenameExtension(filename);
+    variables["ProjectDir"] = Path::simplifyPath(Path::getPathFromFilename(filename));
 
+    // importVcxproj called directly
+    if (variables.find("SolutionDir") == variables.end()) {
+        debugs.clear();
+        variables["SolutionDir"] = variables["ProjectDir"];
+    }
+
+    variables["MSBuildProjectName"] = variables["ProjectName"];
+    variables["MSBuildProjectExtension"] = variables["ProjectExt"];
+    variables["MSBuildProjectDirectory"] = variables["ProjectDir"];
+    variables["MSBuildProjectFile"] = variables["ProjectFileName"];
+    variables["MSBuildProjectFullPath"] = variables["ProjectPath"];
+
+    // common defaults
+    variables["IntDir"] = "$(Platform)/$(Configuration)/";
+    variables["OutDir"] = "$(SolutionDir)$(Platform)/$(Configuration)/";
+    variables["GeneratedFilesDir"] = "$(IntDir)Generated Files/";
+
+    MSBuildThis::setMSBuildThis(filename, variables);
+
+    std::string projectDir = variables["ProjectDir"];
     std::list<ProjectConfiguration> projectConfigurationList;
     std::list<ItemGroupClCompile> compileList;
     std::unordered_set<std::string> importStack;
@@ -1854,7 +1893,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
             else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions2")
                 fs.defines += ";__AVX2__";
             else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions512")
-                fs.defines += ";__AVX512__";
+                fs.defines += ";__AVX512F__";
 
             const auto charSetIt = variables.find("CharacterSet");
             const std::string charSet = (charSetIt != variables.end()) ? charSetIt->second : std::string();
