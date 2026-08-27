@@ -471,7 +471,8 @@ bool ImportProject::importSln(std::istream &istr, const std::string &path, const
         if (startsWith(line, "VisualStudioVersion = ")) {
             const std::string ver = line.substr(std::strlen("VisualStudioVersion = "));
             const std::string::size_type dot = ver.find('.');
-            solutionVariables["VisualStudioVersion"] = (dot != std::string::npos) ? ver.substr(0, dot) : ver;
+            const std::string::size_type dot2 = (dot != std::string::npos) ? ver.find('.', dot + 1) : std::string::npos;
+            solutionVariables["VisualStudioVersion"] = (dot2 != std::string::npos) ? ver.substr(0, dot2) : ver;
             continue;
         }
         if (!startsWith(line,"Project("))
