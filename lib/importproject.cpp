@@ -434,7 +434,7 @@ void ImportProject::setSolution(const std::string &filename, VariablesMap &varia
     variables["SolutionExt"] = Path::getFilenameExtensionInLowerCase(absolutePath);
     variables["SolutionPath"] = absolutePath;
     // Path::stripDirectoryPart doesn't work on windows with unix paths
-    variables["SolutionFileName"] = absolutePath.substr(absolutePath.find_last_of("/") + 1, absolutePath.size());
+    variables["SolutionFileName"] = absolutePath.substr(absolutePath.rfind('/') + 1, absolutePath.size());
     std::string temp = variables["SolutionFileName"];
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     variables["SolutionName"] = temp;
@@ -1302,13 +1302,13 @@ namespace {
 
         static void setMSBuildThis(const std::string &filename, VariablesMap &variables) {
             variables["MSBuildThisFileFullPath"] = filename;
-            std::string temp = filename.substr(filename.find_last_of("/") + 1, filename.size());
+            std::string temp = filename.substr(filename.rfind('/') + 1, filename.size());
             variables["MSBuildThisFile"] = temp;
             findAndReplace(temp, Path::getFilenameExtension(temp), "");
             variables["MSBuildThisFileName"] = temp;
             variables["MSBuildThisFileDirectory"] = Path::simplifyPath(Path::getPathFromFilename(filename));
             temp = Path::simplifyPath(Path::getPathFromFilename(filename));
-            std::string::size_type pos = filename.find("/", 0);
+            std::string::size_type pos = filename.find('/', 0);
             temp.erase(0, pos + 1);
             variables["MSBuildThisFileDirectoryNoRoot"] = temp;
             variables["MSBuildThisFileExtension"] = Path::getFilenameExtensionInLowerCase(filename);
@@ -1672,7 +1672,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     variables.emplace("VisualStudioVersion", "17.0");
 
     variables["ProjectPath"] = filename;
-    std::string temp = filename.substr(filename.find_last_of("/") + 1, filename.size());
+    std::string temp = filename.substr(filename.rfind('/') + 1, filename.size());
     variables["ProjectFileName"] = temp;
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     variables["ProjectName"] = temp;

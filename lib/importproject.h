@@ -182,7 +182,7 @@ private:
     std::string getProperty(const tinyxml2::XMLElement *node, VariablesMap &variables, const std::string &original);
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, VariablesMap &variables);
     static std::string toAbsolute(const std::string &path);
-    void setSolution(const std::string &filename, VariablesMap &variables);
+    static void setSolution(const std::string &filename, VariablesMap &variables);
 
 
     std::string mPath;
