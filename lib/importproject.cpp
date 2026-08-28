@@ -602,11 +602,10 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
 
         if (solutionPlatforms.empty())
             return importProjectForPlatform(vcxproj, "");
-        for (const std::string &platform : solutionPlatforms) {
-            if (!importProjectForPlatform(vcxproj, platform))
-                return false;
-        }
-        return true;
+        return std::all_of(solutionPlatforms.begin(), solutionPlatforms.end(),
+                           [&](const std::string &platform) {
+                               return importProjectForPlatform(vcxproj, platform);
+                           });
     };
 
     // Pass 2: walk <Project> and <Folder> elements
@@ -651,7 +650,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     // see each (file, config) pair exactly once.
     {
         std::set<std::pair<std::string, std::string>> seen;
-        for (auto it = fileSettings.begin(); it != fileSettings.end(); ) {
+        for (auto it = fileSettings.begin(); it != fileSettings.end();) {
             if (!seen.emplace(it->filename(), it->cfg).second)
                 it = fileSettings.erase(it);
             else
@@ -1640,8 +1639,8 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                 }
 
             } else if (option.size() >= 2 &&
-                (option[0] == '/' || option[0] == '-') &&
-                (option[1] == 'I' || option[1] == 'i')) {
+                       (option[0] == '/' || option[0] == '-') &&
+                       (option[1] == 'I' || option[1] == 'i')) {
 
                 std::string path = option.substr(2);
 
@@ -1691,6 +1690,82 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         const char *sdk = node->Attribute("Sdk");
         if (sdk)
             return ImportResult::NotResolvable;
+
+        if (file.find("Microsoft.Cpp.targets") != std::string::npos) {
+            std::string forceImportBeforeCppTargets = properties["ForceImportBeforeCppTargets"];
+            if (!forceImportBeforeCppTargets.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportBeforeCppTargets, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportBeforeCppTargets + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
+            if (!directoryBuildTargets.empty()) {
+                ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + directoryBuildTargets + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            std::string forceImportAfterCppTargets = properties["ForceImportAfterCppTargets"];
+            if (!forceImportAfterCppTargets.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportAfterCppTargets, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportAfterCppTargets + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            return ImportResult::Ok;
+        }
+
+        if (file.find("Microsoft.Cpp.Default.props") != std::string::npos) {
+            std::string forceImportBeforeCppDefaultProp = properties["ForceImportBeforeCppDefaultProps"];
+            if (!forceImportBeforeCppDefaultProp.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportBeforeCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportBeforeCppDefaultProp + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            std::string forceImportAfterCppDefaultProp = properties["ForceImportAfterCppDefaultProps"];
+            if (!forceImportAfterCppDefaultProp.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportAfterCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportAfterCppDefaultProp + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            return ImportResult::Ok;
+        }
+
+        if (file.find("Microsoft.Cpp.props") != std::string::npos) {
+            std::string forceImportBeforeCppProps = properties["ForceImportBeforeCppProps"];
+            if (!forceImportBeforeCppProps.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportBeforeCppProps, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportBeforeCppProps + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            std::string forceImportAfterCppProps = properties["ForceImportAfterCppProps"];
+            if (!forceImportAfterCppProps.empty()) {
+                ImportResult result = importPropsOrTargets(forceImportAfterCppProps, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + forceImportAfterCppProps + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            return ImportResult::Ok;
+        }
+
         ImportResult result = importPropsOrTargets(file, properties, metadata, projectConfigurationList, importStack);
         if (result > ImportResult::NotResolvable) {
             errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
@@ -1951,57 +2026,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
         std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
         if (!directoryBuildProps.empty()) {
             ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
+            if (result > ImportResult::NotResolvable) {
                 errors.emplace_back("Could not import \"" + directoryBuildProps + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportBeforeCppDefaultProp = properties["ForceImportBeforeCppDefaultProps"];
-        if (!forceImportBeforeCppDefaultProp.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportBeforeCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportBeforeCppDefaultProp + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportAfterCppDefaultProp = properties["ForceImportAfterCppDefaultProps"];
-        if (!forceImportAfterCppDefaultProp.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportAfterCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportAfterCppDefaultProp + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportBeforeCppProps = properties["ForceImportBeforeCppProps"];
-        if (!forceImportBeforeCppProps.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportBeforeCppProps, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportBeforeCppProps + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportAfterCppProps = properties["ForceImportAfterCppProps"];
-        if (!forceImportAfterCppProps.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportAfterCppProps, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportAfterCppProps + "\" - " + importResultStr(result));
-        }
-
-        std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
-        if (!directoryBuildTargets.empty()) {
-            ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + directoryBuildTargets + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportBeforeCppTargets = properties["ForceImportBeforeCppTargets"];
-        if (!forceImportBeforeCppTargets.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportBeforeCppTargets, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportBeforeCppTargets + "\" - " + importResultStr(result));
-        }
-
-        std::string forceImportAfterCppTargets = properties["ForceImportAfterCppTargets"];
-        if (!forceImportAfterCppTargets.empty()) {
-            ImportResult result = importPropsOrTargets(forceImportAfterCppTargets, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable)
-                errors.emplace_back("Could not import \"" + forceImportAfterCppTargets + "\" - " + importResultStr(result));
+                return false;
+            }
         }
 
         for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {

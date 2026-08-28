@@ -171,7 +171,7 @@ private:
     ImportResult importProject(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                PropertiesMap &properties,
-        MetadataMap &metadata,
+                               MetadataMap &metadata,
                                std::list<ProjectConfiguration> &projectConfigurationList,
                                std::unordered_set<std::string> &importStack);
     ImportResult importCompile(const tinyxml2::XMLElement *node,
