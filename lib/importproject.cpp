@@ -1941,6 +1941,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         if (!first) {
             compileList.clear();
             properties = originalVariables;
+            metadata.clear();
         } else
             first = false;
 
