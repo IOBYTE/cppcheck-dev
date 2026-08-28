@@ -107,9 +107,9 @@ private:
     void setIncludePaths1() const {
         FileSettings fs{"test.cpp", Standards::Language::CPP, 0};
         std::list<std::string> in(1, "../include");
-        VariablesMap variables;
+        PropertiesMap properties;
         TestImporter importer;
-        importer.fsSetIncludePaths(fs, "abc/def/", in, variables);
+        importer.fsSetIncludePaths(fs, "abc/def/", in, properties);
         ASSERT_EQUALS(1U, fs.includePaths.size());
         ASSERT_EQUALS("abc/include/", fs.includePaths.front());
     }
@@ -117,10 +117,10 @@ private:
     void setIncludePaths2() const {
         FileSettings fs{"test.cpp", Standards::Language::CPP, 0};
         std::list<std::string> in(1, "$(SolutionDir)other");
-        VariablesMap variables;
-        variables["SolutionDir"] = "c:/abc/";
+        PropertiesMap properties;
+        properties["SolutionDir"] = "c:/abc/";
         TestImporter importer;
-        importer.fsSetIncludePaths(fs, "/home/fred", in, variables);
+        importer.fsSetIncludePaths(fs, "/home/fred", in, properties);
         ASSERT_EQUALS(1U, fs.includePaths.size());
         ASSERT_EQUALS("c:/abc/other/", fs.includePaths.front());
     }
@@ -128,10 +128,10 @@ private:
     void setIncludePaths3() const { // macro names are case insensitive
         FileSettings fs{"test.cpp", Standards::Language::CPP, 0};
         std::list<std::string> in(1, "$(SOLUTIONDIR)other");
-        VariablesMap variables;
-        variables["SolutionDir"] = "c:/abc/";
+        PropertiesMap properties;
+        properties["SolutionDir"] = "c:/abc/";
         TestImporter importer;
-        importer.fsSetIncludePaths(fs, "/home/fred", in, variables);
+        importer.fsSetIncludePaths(fs, "/home/fred", in, properties);
         ASSERT_EQUALS(1U, fs.includePaths.size());
         ASSERT_EQUALS("c:/abc/other/", fs.includePaths.front());
     }
