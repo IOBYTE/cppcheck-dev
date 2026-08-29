@@ -906,20 +906,13 @@ private:
         ASSERT_EQUALS("3",  expandMSBuildExpression("$([System.Math]::Ceiling(2.1))"));
 
         // --- $([System.IO.Path]::...) ---
-        ASSERT_EQUALS("bar.cpp",
-            expandMSBuildExpression("$([System.IO.Path]::GetFileName('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS("bar",
-            expandMSBuildExpression("$([System.IO.Path]::GetFileNameWithoutExtension('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS("C:/foo",
-            expandMSBuildExpression("$([System.IO.Path]::GetDirectoryName('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS(".cpp",
-            expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
-        ASSERT_EQUALS("True",
-            expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
-        ASSERT_EQUALS("False",
-            expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
-        ASSERT_EQUALS("a/b",
-            expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
+        ASSERT_EQUALS("bar.cpp", expandMSBuildExpression("$([System.IO.Path]::GetFileName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("bar", expandMSBuildExpression("$([System.IO.Path]::GetFileNameWithoutExtension('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("C:/foo", expandMSBuildExpression("$([System.IO.Path]::GetDirectoryName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS(".cpp", expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
+        ASSERT_EQUALS("True", expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
+        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
+        ASSERT_EQUALS("a/b", expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
 
         // --- Composite / nesting ---
         ASSERT_EQUALS("6",  expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));

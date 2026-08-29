@@ -568,7 +568,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
         // otherwise use std::to_string (which gives 6 decimal places).
         const auto fmtDouble = [](double d) -> std::string {
             const auto i = static_cast<long long>(d);
-            if (static_cast<double>(i) == d)
+            if (!(static_cast<double>(i) < d) && !(static_cast<double>(i) > d))
                 return std::to_string(i);
             return std::to_string(d);
         };
