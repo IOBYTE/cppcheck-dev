@@ -86,6 +86,7 @@ private:
         TEST_CASE(testCollectArgs6);
         TEST_CASE(testCollectArgs7);
         TEST_CASE(testVcxprojConditions);
+        TEST_CASE(testMSBuildStaticFunctions);
     }
 
     void setDefines() const {
@@ -720,6 +721,50 @@ private:
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'13.0' >= '14.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.10.0.0' > '1.9.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'v14.0' >= '14.0'", "", ""));
+        // Version comparison: full 4-part #.#.#.#
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' == '1.2.3.4'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' == '1.2.3.5'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.5' > '1.2.3.4'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' < '1.2.3.5'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'2.0.0.0' > '1.9.9.9'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.9.9.9' > '2.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' >= '1.2.3.4'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' <= '1.2.3.4'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4' > '1.2.3.4'", "", ""));
+        // Version comparison: more than 4 parts (no truncation)
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.5' > '1.2.3.4.4'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.4' > '1.2.3.4.5'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
+        // Version comparison: missing trailing components treated as 0
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' >= '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' <= '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' > '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' < '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'16.9' > '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1' < '1.0.0.1'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3' < '1.2.3.1'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3' > '1.2.2.9'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'2' > '1.9.9.9'", "", ""));
+        // 'Current' on LHS
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' > '14'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' >= '18'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Current' < '14'", "", ""));
+        // 'Current' on RHS
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'14' < 'Current'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'18' <= 'Current'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'19' < 'Current'", "", ""));
+        // Static property functions in conditions
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::Add(1, 2)) == '3'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::EnsureTrailingSlash('foo')) == 'foo/'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.String]::IsNullOrEmpty('')) == 'True'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.Math]::Max(1, 2)) == '2'", "", ""));
         // Unknown variable
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'$(DoesNotExist)' == ''", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'$(PATH)' != ''", "", ""));
@@ -738,8 +783,8 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.ToLower()) == 'debug'", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.ToUpper()) == 'debug'", "Debug", "Win32"));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("$(Configuration.ToUpper()) == 'RELEASE'", "Debug", "Win32"));
-        // invalid expression in => no error. We are ok with that as long as we don't crash
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("' ' && ' '", "", ""));
+        // C-style && is not a valid MSBuild operator — throws rather than silently returning false
+        ASSERT_THROW_EQUALS(cppcheck::testing::evaluateVcxprojCondition("' ' && ' '", "", ""), std::runtime_error, "Invalid condition: '' ' && ' ''");
         // case insensitive
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Debug' == 'DEBUG'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Debug' != 'DEBUG'", "", ""));
@@ -811,6 +856,76 @@ private:
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' < '0x0F'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'010' > '9'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
+    }
+
+    void testMSBuildStaticFunctions() const {
+        using cppcheck::testing::expandMSBuildExpression;
+        using cppcheck::testing::evaluateVcxprojCondition;
+
+        // --- $([MSBuild]::...) arithmetic ---
+        ASSERT_EQUALS("3",  expandMSBuildExpression("$([MSBuild]::Add(1, 2))"));
+        ASSERT_EQUALS("5",  expandMSBuildExpression("$([MSBuild]::Subtract(8, 3))"));
+        ASSERT_EQUALS("12", expandMSBuildExpression("$([MSBuild]::Multiply(3, 4))"));
+        ASSERT_EQUALS("3",  expandMSBuildExpression("$([MSBuild]::Divide(9, 3))"));
+        ASSERT_EQUALS("2",  expandMSBuildExpression("$([MSBuild]::Modulo(5, 3))"));
+
+        // --- $([MSBuild]::...) path helpers ---
+        ASSERT_EQUALS("foo/", expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo'))"));
+        ASSERT_EQUALS("foo/", expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo/'))"));
+        // ValueOrDefault: return first arg when non-empty, else second
+        ASSERT_EQUALS("x",   expandMSBuildExpression("$([MSBuild]::ValueOrDefault('x', 'y'))"));
+        ASSERT_EQUALS("y",   expandMSBuildExpression("$([MSBuild]::ValueOrDefault('', 'y'))"));
+        // GetCurrentToolsVersion
+        ASSERT_EQUALS("Current", expandMSBuildExpression("$([MSBuild]::GetCurrentToolsVersion())"));
+
+        // --- $([MSBuild]::...) bitwise ---
+        ASSERT_EQUALS("2",  expandMSBuildExpression("$([MSBuild]::BitwiseAnd(6, 3))"));
+        ASSERT_EQUALS("7",  expandMSBuildExpression("$([MSBuild]::BitwiseOr(5, 3))"));
+        ASSERT_EQUALS("6",  expandMSBuildExpression("$([MSBuild]::BitwiseXor(5, 3))"));
+
+        // --- $([MSBuild]::...) Escape / Unescape ---
+        ASSERT_EQUALS("%3B", expandMSBuildExpression("$([MSBuild]::Escape(';'))"));
+        ASSERT_EQUALS(";",   expandMSBuildExpression("$([MSBuild]::Unescape('%3B'))"));
+        ASSERT_EQUALS("%24", expandMSBuildExpression("$([MSBuild]::Escape('$'))"));
+        ASSERT_EQUALS("$",   expandMSBuildExpression("$([MSBuild]::Unescape('%24'))"));
+
+        // --- $([System.String]::...) ---
+        ASSERT_EQUALS("True",  expandMSBuildExpression("$([System.String]::IsNullOrEmpty(''))"));
+        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.String]::IsNullOrEmpty('x'))"));
+        ASSERT_EQUALS("True",  expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('  '))"));
+        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('x'))"));
+        ASSERT_EQUALS("ab",    expandMSBuildExpression("$([System.String]::Concat('a', 'b'))"));
+        ASSERT_EQUALS("a,b",   expandMSBuildExpression("$([System.String]::Join(',', 'a', 'b'))"));
+
+        // --- $([System.Math]::...) ---
+        ASSERT_EQUALS("10", expandMSBuildExpression("$([System.Math]::Max(5, 10))"));
+        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Min(5, 10))"));
+        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Abs(-5))"));
+        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Abs(5))"));
+        ASSERT_EQUALS("2",  expandMSBuildExpression("$([System.Math]::Floor(2.9))"));
+        ASSERT_EQUALS("3",  expandMSBuildExpression("$([System.Math]::Ceiling(2.1))"));
+
+        // --- $([System.IO.Path]::...) ---
+        ASSERT_EQUALS("bar.cpp",
+            expandMSBuildExpression("$([System.IO.Path]::GetFileName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("bar",
+            expandMSBuildExpression("$([System.IO.Path]::GetFileNameWithoutExtension('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("C:/foo",
+            expandMSBuildExpression("$([System.IO.Path]::GetDirectoryName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS(".cpp",
+            expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
+        ASSERT_EQUALS("True",
+            expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
+        ASSERT_EQUALS("False",
+            expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
+        ASSERT_EQUALS("a/b",
+            expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
+
+        // --- Composite / nesting ---
+        ASSERT_EQUALS("6",  expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));
+        ASSERT(evaluateVcxprojCondition("$([MSBuild]::Add(1, 2)) == '3'", "", ""));
+        ASSERT(evaluateVcxprojCondition("$([System.String]::IsNullOrEmpty('')) == 'True'", "", ""));
+        ASSERT(evaluateVcxprojCondition("$([System.Math]::Max(10, 5)) == '10'", "", ""));
     }
 
     // TODO: test fsParseCommand()

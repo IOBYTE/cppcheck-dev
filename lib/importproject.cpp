@@ -564,11 +564,19 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             out = std::strtod(s.c_str(), &end);
             return end != s.c_str() && *end == '\0';
         };
+        // Format a double as an integer string when the value is whole,
+        // otherwise use std::to_string (which gives 6 decimal places).
+        const auto fmtDouble = [](double d) -> std::string {
+            const auto i = static_cast<long long>(d);
+            if (static_cast<double>(i) == d)
+                return std::to_string(i);
+            return std::to_string(d);
+        };
         if (args.size() == 1) {
             double x = 0;
             if (toDouble(args[0], x)) {
                 if (caseInsensitiveStringCompare(member, "Abs") == 0)
-                    return std::to_string(x < 0 ? -x : x);
+                    return fmtDouble(x < 0 ? -x : x);
                 if (caseInsensitiveStringCompare(member, "Floor") == 0)
                     return std::to_string(static_cast<long long>(x >= 0 ? x : x - 1));
                 if (caseInsensitiveStringCompare(member, "Ceiling") == 0)
@@ -576,22 +584,22 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 if (caseInsensitiveStringCompare(member, "Round") == 0)
                     return std::to_string(static_cast<long long>(x >= 0 ? x + 0.5 : x - 0.5));
                 if (caseInsensitiveStringCompare(member, "Sqrt") == 0 && x >= 0)
-                    return std::to_string(std::sqrt(x));
+                    return fmtDouble(std::sqrt(x));
                 if (caseInsensitiveStringCompare(member, "Log") == 0 && x > 0)
-                    return std::to_string(std::log(x));
+                    return fmtDouble(std::log(x));
                 if (caseInsensitiveStringCompare(member, "Log10") == 0 && x > 0)
-                    return std::to_string(std::log10(x));
+                    return fmtDouble(std::log10(x));
             }
         }
         if (args.size() == 2) {
             double a = 0, b = 0;
             if (toDouble(args[0], a) && toDouble(args[1], b)) {
                 if (caseInsensitiveStringCompare(member, "Max") == 0)
-                    return std::to_string(a > b ? a : b);
+                    return fmtDouble(a > b ? a : b);
                 if (caseInsensitiveStringCompare(member, "Min") == 0)
-                    return std::to_string(a < b ? a : b);
+                    return fmtDouble(a < b ? a : b);
                 if (caseInsensitiveStringCompare(member, "Pow") == 0)
-                    return std::to_string(std::pow(a, b));
+                    return fmtDouble(std::pow(a, b));
             }
         }
     }
@@ -1357,7 +1365,7 @@ namespace {
 
         std::string parseOr() {
             std::string lhs = parseAnd();
-            while (matchWord("or") || match("||")) {
+            while (matchWord("or")) {
                 const bool savedEvaluate = mEvaluate;
                 if (lhs == "True") mEvaluate = false;
                 const std::string rhs = parseAnd();
@@ -1370,7 +1378,7 @@ namespace {
 
         std::string parseAnd() {
             std::string lhs = parseUnary();
-            while (matchWord("and") || match("&&")) {
+            while (matchWord("and")) {
                 const bool savedEvaluate = mEvaluate;
                 if (lhs == "False") mEvaluate = false;
                 const std::string rhs = parseUnary();
@@ -1708,10 +1716,19 @@ namespace {
                 return parts;
             };
 
-            if (op == "==")
-                return caseInsensitiveStringCompare(lhs, rhs) == 0;
-            if (op == "!=")
-                return caseInsensitiveStringCompare(lhs, rhs) != 0;
+            if (op == "==" || op == "!=") {
+                const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
+                if (!strEqual) {
+                    // "17" and "17.0.0.0" represent the same version; try version comparison
+                    const auto lv = parseVersion(lhs);
+                    const auto rv = parseVersion(rhs);
+                    if (!lv.empty() && !rv.empty()) {
+                        const bool verEqual = compareVersions(lv, rv) == 0;
+                        return (op == "==") ? verEqual : !verEqual;
+                    }
+                }
+                return (op == "==") ? strEqual : !strEqual;
+            }
 
             if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
                 const auto rhsVersion = parseVersion(rhs);
@@ -3362,5 +3379,15 @@ bool cppcheck::testing::evaluateVcxprojCondition(const std::string& condition,
     PropertiesMap properties;
     properties["Platform"] = platform;
     properties["Configuration"] = configuration;
-    return evalCondition(condition, properties);
+    // Use ConditionParser directly so exceptions propagate to the caller;
+    // evalCondition swallows them (by design for production use).
+    return ConditionParser(condition, properties).parse();
+}
+
+std::string cppcheck::testing::expandMSBuildExpression(const std::string& expr)
+{
+    PropertiesMap properties;
+    std::string s = expr;
+    expandMSBuildVariables(s, properties);
+    return s;
 }

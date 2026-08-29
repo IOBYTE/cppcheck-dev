@@ -55,6 +55,9 @@ namespace cppcheck {
     namespace testing
     {
         CPPCHECKLIB bool evaluateVcxprojCondition(const std::string& condition, const std::string& configuration, const std::string& platform);
+        /** Expand MSBuild property expressions ($(Name), $([Class]::Method(args))) in \p expr
+         *  against an empty property map and return the result. Intended for unit tests. */
+        CPPCHECKLIB std::string expandMSBuildExpression(const std::string& expr);
     }
 }
 
