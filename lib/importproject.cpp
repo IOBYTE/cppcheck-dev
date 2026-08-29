@@ -790,11 +790,11 @@ namespace {
         std::string parseOr() {
             std::string lhs = parseAnd();
             while (matchWord("or") || match("||")) {
-                const bool skip = (lhs == "True");
-                if (skip) mEvaluate = false;
+                const bool savedEvaluate = mEvaluate;
+                if (lhs == "True") mEvaluate = false;
                 const std::string rhs = parseAnd();
-                if (skip) mEvaluate = true;
-                if (!skip)
+                mEvaluate = savedEvaluate;
+                if (lhs != "True")
                     lhs = (rhs == "True") ? "True" : "False";
             }
             return lhs;
@@ -803,11 +803,11 @@ namespace {
         std::string parseAnd() {
             std::string lhs = parseUnary();
             while (matchWord("and") || match("&&")) {
-                const bool skip = (lhs == "False");
-                if (skip) mEvaluate = false;
+                const bool savedEvaluate = mEvaluate;
+                if (lhs == "False") mEvaluate = false;
                 const std::string rhs = parseUnary();
-                if (skip) mEvaluate = true;
-                if (!skip)
+                mEvaluate = savedEvaluate;
+                if (lhs != "False")
                     lhs = (rhs == "True") ? "True" : "False";
             }
             return lhs;
