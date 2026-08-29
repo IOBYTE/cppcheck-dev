@@ -746,6 +746,7 @@ namespace {
         const std::string &mCondition;
         const PropertiesMap &mVariables;
         std::size_t mPos = 0;
+        bool mEvaluate = true;  // false while parsing a short-circuited operand
 
         void skipWhitespace() {
             while (mPos < mCondition.size() && std::isspace(static_cast<unsigned char>(mCondition[mPos])))
@@ -789,8 +790,12 @@ namespace {
         std::string parseOr() {
             std::string lhs = parseAnd();
             while (matchWord("or") || match("||")) {
+                const bool skip = (lhs == "True");
+                if (skip) mEvaluate = false;
                 const std::string rhs = parseAnd();
-                lhs = rhs == "True" ? "True" : (lhs == "True" ? "True" : "False");
+                if (skip) mEvaluate = true;
+                if (!skip)
+                    lhs = (rhs == "True") ? "True" : "False";
             }
             return lhs;
         }
@@ -798,8 +803,12 @@ namespace {
         std::string parseAnd() {
             std::string lhs = parseUnary();
             while (matchWord("and") || match("&&")) {
+                const bool skip = (lhs == "False");
+                if (skip) mEvaluate = false;
                 const std::string rhs = parseUnary();
-                lhs = (lhs == "True" && rhs == "True") ? "True" : "False";
+                if (skip) mEvaluate = true;
+                if (!skip)
+                    lhs = (rhs == "True") ? "True" : "False";
             }
             return lhs;
         }
@@ -890,6 +899,8 @@ namespace {
 
             if (mPos != begin)
                 return mCondition.substr(begin, mPos - begin);
+            if (!mEvaluate)
+                return std::string();
             throw std::runtime_error("Unknown/unhandled operator/operand '" + mCondition.substr(mPos) + "'");
         }
 
@@ -906,6 +917,8 @@ namespace {
                 value += c;
             }
 
+            if (!mEvaluate)
+                return std::string();
             throw std::runtime_error("Can not tokenize condition");
         }
 
@@ -962,7 +975,7 @@ namespace {
                     } while (match(","));
                     expect(")");
                 }
-                value = applyMethod(value, method, args);
+                value = mEvaluate ? applyMethod(value, method, args) : std::string();
             }
 
             expect(")");
@@ -1318,7 +1331,8 @@ namespace {
         std::string::size_type pos1 = 0;
         std::string::size_type pos2;
         while ((pos2 = s.find(';',pos1)) != std::string::npos) {
-            ret.push_back(s.substr(pos1, pos2-pos1));
+            if (pos2 > pos1)
+                ret.push_back(s.substr(pos1, pos2-pos1));
             pos1 = pos2 + 1;
             if (pos1 >= s.size())
                 break;
@@ -1377,7 +1391,7 @@ namespace {
             properties["MSBuildThisFileName"] = temp;
             properties["MSBuildThisFileDirectory"] = Path::simplifyPath(Path::getPathFromFilename(filename));
             temp = Path::simplifyPath(Path::getPathFromFilename(filename));
-            std::string::size_type pos = filename.find('/', 0);
+            std::string::size_type pos = temp.find('/', 0);
             temp.erase(0, pos + 1);
             properties["MSBuildThisFileDirectoryNoRoot"] = temp;
             properties["MSBuildThisFileExtension"] = Path::getFilenameExtensionInLowerCase(filename);
@@ -2039,15 +2053,14 @@ bool ImportProject::importVcxproj(const std::string &filename,
         }
     }
 
-    // The vcxproj may have no ProjectConfigurations of its own (e.g. the PowerToys pattern:
-    // they live in Cpp.Build.props, imported via Directory.Build.props, and are generated
-    // using $(Platform) set by the solution context).  Do a discovery import now so the
-    // per-config loop below has something to iterate over.  ImportStackGuard removes the
-    // file on return, so the loop can re-import it with $(Configuration)/$(Platform) set.
+    // The vcxproj may have no ProjectConfigurations of its own so get it from Directory.Build.props
     if (projectConfigurationList.empty()) {
         const std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
+        PropertiesMap props = properties;
+        MetadataMap data;
+        std::unordered_set<std::string> stack;
         if (!directoryBuildProps.empty())
-            importPropsOrTargets(directoryBuildProps, properties, metadata, projectConfigurationList, importStack);
+            importPropsOrTargets(directoryBuildProps, props, data, projectConfigurationList, stack);
     }
 
     PropertiesMap originalVariables = properties;
