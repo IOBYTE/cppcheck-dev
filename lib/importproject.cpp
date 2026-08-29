@@ -264,41 +264,252 @@ static std::string::size_type findMatchingParen(const std::string &s, std::strin
     return std::string::npos;
 }
 
+// Apply an MSBuild property string method (ToLower, Replace, etc.).
+// Used by both the condition evaluator and the property value expander.
+static std::string applyPropertyMethod(std::string value,
+                                       const std::string &method,
+                                       const std::vector<std::string> &args)
+{
+    if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
+        if (!args.empty())
+            throw std::runtime_error("ToUpper takes no arguments");
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return std::toupper(c);
+        });
+        return value;
+    }
+
+    if (caseInsensitiveStringCompare(method, "ToLower") == 0) {
+        if (!args.empty())
+            throw std::runtime_error("ToLower takes no arguments");
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return std::tolower(c);
+        });
+        return value;
+    }
+
+    if (caseInsensitiveStringCompare(method, "Contains") == 0) {
+        if (args.size() != 1)
+            throw std::runtime_error("Contains requires one argument");
+        return value.find(args[0]) != std::string::npos ? "True" : "False";
+    }
+
+    if (caseInsensitiveStringCompare(method, "StartsWith") == 0) {
+        if (args.size() != 1)
+            throw std::runtime_error("StartsWith requires one argument");
+        return startsWith(value, args[0]) ? "True" : "False";
+    }
+
+    if (caseInsensitiveStringCompare(method, "EndsWith") == 0) {
+        if (args.size() != 1)
+            throw std::runtime_error("EndsWith requires one argument");
+        return endsWith(value, args[0].c_str(), args[0].size()) ? "True" : "False";
+    }
+
+    if (caseInsensitiveStringCompare(method, "Trim") == 0) {
+        if (args.empty()) {
+            const std::size_t first = value.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos)
+                return "";
+            const std::size_t last = value.find_last_not_of(" \t\r\n");
+            return value.substr(first, last - first + 1);
+        }
+        std::string chars;
+        for (const std::string &arg : args)
+            chars += arg;
+        const std::size_t first = value.find_first_not_of(chars);
+        if (first == std::string::npos)
+            return "";
+        const std::size_t last = value.find_last_not_of(chars);
+        return value.substr(first, last - first + 1);
+    }
+
+    if (caseInsensitiveStringCompare(method, "TrimStart") == 0) {
+        if (args.empty()) {
+            const std::size_t first = value.find_first_not_of(" \t\r\n");
+            return first == std::string::npos ? "" : value.substr(first);
+        }
+        std::string chars;
+        for (const std::string &arg : args)
+            chars += arg;
+        const std::size_t first = value.find_first_not_of(chars);
+        return first == std::string::npos ? "" : value.substr(first);
+    }
+
+    if (caseInsensitiveStringCompare(method, "TrimEnd") == 0) {
+        if (args.empty()) {
+            const std::size_t last = value.find_last_not_of(" \t\r\n");
+            return last == std::string::npos ? "" : value.substr(0, last + 1);
+        }
+        std::string chars;
+        for (const std::string &arg : args)
+            chars += arg;
+        const std::size_t last = value.find_last_not_of(chars);
+        return last == std::string::npos ? "" : value.substr(0, last + 1);
+    }
+
+    if (caseInsensitiveStringCompare(method, "Substring") == 0) {
+        if (args.size() != 1 && args.size() != 2)
+            throw std::runtime_error("Substring requires one or two arguments");
+        char *end = nullptr;
+        const long start = std::strtol(args[0].c_str(), &end, 10);
+        if (end == args[0].c_str() || *end != '\0')
+            throw std::runtime_error("Invalid Substring start index");
+        if (start < 0 || static_cast<unsigned long>(start) > value.size())
+            throw std::runtime_error("Substring start index out of range");
+        const auto index = static_cast<std::size_t>(start);
+        if (args.size() == 1)
+            return value.substr(index);
+        end = nullptr;
+        const long length = std::strtol(args[1].c_str(), &end, 10);
+        if (end == args[1].c_str() || *end != '\0')
+            throw std::runtime_error("Invalid Substring length");
+        if (length < 0 || static_cast<unsigned long>(length) > value.size() - index)
+            throw std::runtime_error("Substring length out of range");
+        return value.substr(index, static_cast<std::size_t>(length));
+    }
+
+    if (caseInsensitiveStringCompare(method, "Replace") == 0) {
+        if (args.size() != 2)
+            throw std::runtime_error("Replace requires two arguments");
+        if (args[0].empty())
+            throw std::runtime_error("Replace search string cannot be empty");
+        std::size_t pos = 0;
+        while ((pos = value.find(args[0], pos)) != std::string::npos) {
+            value.replace(pos, args[0].size(), args[1]);
+            pos += args[1].size();
+        }
+        return value;
+    }
+
+    throw std::runtime_error("Unhandled method '" + method + "'");
+}
+
+// Expands $(Name) and $(Name.Method(args)) references in property value strings.
+// Unknown variables are left unexpanded. Use expandPropertyValue() to invoke.
+struct PropertyValueExpander {
+    const PropertiesMap &mVars;
+    std::string mStr;
+    std::size_t mPos{0};
+    bool mChanged{false};
+    bool mReplaceUnknown{false};  // if true, unknown variables expand to ""
+
+    bool isKnown(const std::string &name) const {
+        if (mVars.count(name)) return true;
+        return std::getenv(name.c_str()) != nullptr;
+    }
+
+    std::string lookup(const std::string &name) const {
+        const auto it = mVars.find(name);
+        if (it != mVars.end())
+            return it->second;
+        const char *env = std::getenv(name.c_str());
+        return env ? env : std::string();
+    }
+
+    // Parses an identifier, handling nested $(...) within the name.
+    std::string parseIdentifier() {
+        std::string result;
+        while (mPos < mStr.size()) {
+            if (mStr.compare(mPos, 2, "$(") == 0) {
+                result += tryParseExpr();
+                continue;
+            }
+            const auto c = static_cast<unsigned char>(mStr[mPos]);
+            if (!std::isalnum(c) && c != '_' && c != '-') break;
+            result += mStr[mPos++];
+        }
+        return result;
+    }
+
+    // Parses one method argument: a quoted string literal or a $(…) reference.
+    std::string parseArg() {
+        while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+            ++mPos;
+        if (mPos < mStr.size() && mStr[mPos] == '\'') {
+            ++mPos;
+            std::string s;
+            while (mPos < mStr.size() && mStr[mPos] != '\'')
+                s += mStr[mPos++];
+            if (mPos < mStr.size()) ++mPos;  // consume closing '\''
+            return s;
+        }
+        if (mStr.compare(mPos, 2, "$(") == 0)
+            return tryParseExpr();
+        // Bare word — consume until ',' or ')'.
+        std::string s;
+        while (mPos < mStr.size() && mStr[mPos] != ',' && mStr[mPos] != ')')
+            s += mStr[mPos++];
+        return s;
+    }
+
+    // Parses and evaluates $(Name[.Method(args)…]) starting at mPos.
+    // If the variable is unknown the token is left unchanged and mPos advances past it.
+    std::string tryParseExpr() {
+        const std::size_t start = mPos;
+        mPos += 2;  // skip "$("
+        const std::string name = parseIdentifier();
+        if (name.empty() || !isKnown(name)) {
+            const std::size_t end = findMatchingParen(mStr, start + 2);
+            mPos = (end != std::string::npos) ? end + 1 : mStr.size();
+            if (mReplaceUnknown) {
+                mChanged = true;
+                return std::string();
+            }
+            return mStr.substr(start, mPos - start);
+        }
+        mChanged = true;
+        std::string value = lookup(name);
+        // Parse optional .Method(args) chain.
+        while (mPos < mStr.size() && mStr[mPos] == '.') {
+            ++mPos;
+            std::string method;
+            while (mPos < mStr.size()) {
+                const auto c = static_cast<unsigned char>(mStr[mPos]);
+                if (!std::isalnum(c) && c != '_') break;
+                method += mStr[mPos++];
+            }
+            if (mPos >= mStr.size() || mStr[mPos] != '(') break;
+            ++mPos;  // skip '('
+            std::vector<std::string> args;
+            while (mPos < mStr.size() && mStr[mPos] != ')') {
+                args.push_back(parseArg());
+                while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+                    ++mPos;
+                if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
+            }
+            if (mPos < mStr.size()) ++mPos;  // skip ')'
+            try { value = applyPropertyMethod(value, method, args); } catch (...) {}
+        }
+        if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip closing ')'
+        return value;
+    }
+
+    // Expand all property expressions in mStr, multi-pass (capped at 50).
+    std::string expand() {
+        const int maxPasses = 50;
+        for (int pass = 0; pass < maxPasses; ++pass) {
+            mChanged = false;
+            mPos = 0;
+            std::string result;
+            result.reserve(mStr.size());
+            while (mPos < mStr.size()) {
+                if (mStr.compare(mPos, 2, "$(") == 0)
+                    result += tryParseExpr();
+                else
+                    result += mStr[mPos++];
+            }
+            mStr = std::move(result);
+            if (!mChanged) break;
+        }
+        return mStr;
+    }
+};
+
 static void expandMSBuildVariables(std::string &s, PropertiesMap &properties)
 {
-    // Use multiple passes with a "no change" termination guard.
-    // A cap of 50 prevents infinite loops from genuinely cyclic properties (A=$(B), B=$(A)).
-    const int maxPasses = 50;
-    for (int pass = 0; pass < maxPasses; ++pass) {
-        bool changed = false;
-        std::string::size_type pos = 0;
-        while ((pos = s.find("$(", pos)) != std::string::npos) {
-            // Find the matching ')' respecting nested '$(' pairs.
-            const std::string::size_type end = findMatchingParen(s, pos + 2);
-            if (end == std::string::npos)
-                break;
-            std::string var = s.substr(pos + 2, end - pos - 2);
-            // If the name itself contains nested references, resolve them first.
-            if (var.find("$(") != std::string::npos)
-                expandMSBuildVariables(var, properties);
-            auto it = properties.find(var);
-            if (it == properties.end()) {
-                // fall back to environment variable and cache for future passes
-                const char *envValue = std::getenv(var.c_str());
-                if (!envValue) {
-                    pos = end + 1;  // unknown — skip and keep going
-                    continue;
-                }
-                properties[var] = envValue;
-                it = properties.find(var);
-            }
-            s.replace(pos, end - pos + 1, it->second);
-            pos += it->second.size();  // advance past the replacement
-            changed = true;
-        }
-        if (!changed)
-            break;  // nothing left to expand — done
-    }
+    PropertyValueExpander expander{properties, s};
+    s = expander.expand();
 }
 
 ImportProject::Type ImportProject::import(const std::string &filename, Settings *settings, Suppressions *supprs)
@@ -1044,175 +1255,17 @@ namespace {
         }
 
         std::string expandProperties(const std::string &input) const {
-            std::string result = input;
-            // Multi-pass so values that expand to further references are resolved.
-            // Cap at 50 to break genuine cycles.
-            const int maxPasses = 50;
-            for (int pass = 0; pass < maxPasses; ++pass) {
-                bool changed = false;
-                std::size_t pos = 0;
-                while ((pos = result.find("$(", pos)) != std::string::npos) {
-                    // Use nesting-aware search for the matching ')'.
-                    const std::size_t end = findMatchingParen(result, pos + 2);
-                    if (end == std::string::npos)
-                        break;
-                    std::string name = result.substr(pos + 2, end - pos - 2);
-                    // If the name itself contains nested references, resolve them first.
-                    if (name.find("$(") != std::string::npos)
-                        name = expandProperties(name);
-                    // Only expand simple property references here; skip method calls
-                    // (bare '(' remaining after nested expansion) — those are handled
-                    // by parsePropertyExpression().
-                    if (name.find('(') != std::string::npos) {
-                        pos = end + 1;
-                        continue;
-                    }
-                    const std::string value = getPropertyValue(name);
-                    result.replace(pos, end - pos + 1, value);
-                    pos += value.size();
-                    changed = true;
-                }
-                if (!changed)
-                    break;
-            }
-            return result;
+            // Delegate to PropertyValueExpander. In condition context unknown
+            // variables must expand to "" (MSBuild semantics for quoted strings).
+            PropertyValueExpander expander{mVariables, input};
+            expander.mReplaceUnknown = true;
+            return expander.expand();
         }
 
         static std::string applyMethod(std::string value,
                                        const std::string &method,
                                        const std::vector<std::string> &args) {
-            if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
-                if (!args.empty())
-                    throw std::runtime_error("ToUpper takes no arguments");
-                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                    return std::toupper(c);
-                });
-                return value;
-            }
-
-            if (caseInsensitiveStringCompare(method, "ToLower") == 0) {
-                if (!args.empty())
-                    throw std::runtime_error("ToLower takes no arguments");
-                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                    return std::tolower(c);
-                });
-                return value;
-            }
-
-            if (caseInsensitiveStringCompare(method, "Contains") == 0) {
-                if (args.size() != 1)
-                    throw std::runtime_error("Contains requires one argument");
-                return value.find(args[0]) != std::string::npos ? "True" : "False";
-            }
-
-            if (caseInsensitiveStringCompare(method, "StartsWith") == 0) {
-                if (args.size() != 1)
-                    throw std::runtime_error("StartsWith requires one argument");
-                return startsWith(value, args[0]) ? "True" : "False";
-            }
-
-            if (caseInsensitiveStringCompare(method, "EndsWith") == 0) {
-                if (args.size() != 1)
-                    throw std::runtime_error("EndsWith requires one argument");
-                return endsWith(value, args[0].c_str(), args[0].size()) ? "True" : "False";
-            }
-
-            if (caseInsensitiveStringCompare(method, "Trim") == 0) {
-                if (args.empty()) {
-                    const std::size_t first = value.find_first_not_of(" \t\r\n");
-                    if (first == std::string::npos)
-                        return "";
-
-                    const std::size_t last = value.find_last_not_of(" \t\r\n");
-                    return value.substr(first, last - first + 1);
-                }
-
-                std::string chars;
-                for (const std::string &arg : args)
-                    chars += arg;
-
-                const std::size_t first = value.find_first_not_of(chars);
-                if (first == std::string::npos)
-                    return "";
-
-                const std::size_t last = value.find_last_not_of(chars);
-                return value.substr(first, last - first + 1);
-            }
-
-            if (caseInsensitiveStringCompare(method, "TrimStart") == 0) {
-                if (args.empty()) {
-                    const std::size_t first = value.find_first_not_of(" \t\r\n");
-                    return first == std::string::npos ? "" : value.substr(first);
-                }
-
-                std::string chars;
-                for (const std::string &arg : args)
-                    chars += arg;
-
-                const std::size_t first = value.find_first_not_of(chars);
-                return first == std::string::npos ? "" : value.substr(first);
-            }
-
-            if (caseInsensitiveStringCompare(method, "TrimEnd") == 0) {
-                if (args.empty()) {
-                    const std::size_t last = value.find_last_not_of(" \t\r\n");
-                    return last == std::string::npos ? "" : value.substr(0, last + 1);
-                }
-
-                std::string chars;
-                for (const std::string &arg : args)
-                    chars += arg;
-
-                const std::size_t last = value.find_last_not_of(chars);
-                return last == std::string::npos ? "" : value.substr(0, last + 1);
-            }
-
-            if (caseInsensitiveStringCompare(method, "Substring") == 0) {
-                if (args.size() != 1 && args.size() != 2)
-                    throw std::runtime_error("Substring requires one or two arguments");
-
-                char *end = nullptr;
-                const long start = std::strtol(args[0].c_str(), &end, 10);
-                if (end == args[0].c_str() || *end != '\0')
-                    throw std::runtime_error("Invalid Substring start index");
-
-                if (start < 0 ||
-                    static_cast<unsigned long>(start) > value.size())
-                    throw std::runtime_error("Substring start index out of range");
-
-                const auto index = static_cast<std::size_t>(start);
-
-                if (args.size() == 1)
-                    return value.substr(index);
-
-                end = nullptr;
-                const long length = std::strtol(args[1].c_str(), &end, 10);
-                if (end == args[1].c_str() || *end != '\0')
-                    throw std::runtime_error("Invalid Substring length");
-
-                if (length < 0 ||
-                    static_cast<unsigned long>(length) > value.size() - index)
-                    throw std::runtime_error("Substring length out of range");
-
-                return value.substr(index, static_cast<std::size_t>(length));
-            }
-
-            if (caseInsensitiveStringCompare(method, "Replace") == 0) {
-                if (args.size() != 2)
-                    throw std::runtime_error("Replace requires two arguments");
-
-                if (args[0].empty())
-                    throw std::runtime_error("Replace search string cannot be empty");
-
-                std::size_t pos = 0;
-                while ((pos = value.find(args[0], pos)) != std::string::npos) {
-                    value.replace(pos, args[0].size(), args[1]);
-                    pos += args[1].size();
-                }
-                return value;
-            }
-
-            throw std::runtime_error("Unhandled method '" + method + "'");
+            return applyPropertyMethod(std::move(value), method, args);
         }
 
         static int compareVersions(const std::vector<int> &lhs,
