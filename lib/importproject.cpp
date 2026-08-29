@@ -394,6 +394,9 @@ struct PropertyValueExpander {
     bool mChanged{false};
     bool mReplaceUnknown{false};  // if true, unknown variables expand to ""
 
+    PropertyValueExpander(const PropertiesMap &vars, std::string str)
+        : mVars(vars), mStr(std::move(str)) {}
+
     bool isKnown(const std::string &name) const {
         if (mVars.count(name)) return true;
         return std::getenv(name.c_str()) != nullptr;
