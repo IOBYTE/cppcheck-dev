@@ -247,6 +247,23 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
+// Find the ')' that matches the '(' at position parenPos, handling nested '$(' pairs.
+static std::string::size_type findMatchingParen(const std::string &s, std::string::size_type parenPos)
+{
+    int depth = 0;
+    for (std::string::size_type i = parenPos; i < s.size(); ++i) {
+        if (s.compare(i, 2, "$(") == 0) {
+            ++depth;
+            ++i;  // skip the '(' on next iteration increment
+        } else if (s[i] == ')') {
+            if (depth == 0)
+                return i;
+            --depth;
+        }
+    }
+    return std::string::npos;
+}
+
 static void expandMSBuildVariables(std::string &s, PropertiesMap &properties)
 {
     // Use multiple passes with a "no change" termination guard.
@@ -256,10 +273,14 @@ static void expandMSBuildVariables(std::string &s, PropertiesMap &properties)
         bool changed = false;
         std::string::size_type pos = 0;
         while ((pos = s.find("$(", pos)) != std::string::npos) {
-            const std::string::size_type end = s.find(')', pos);
+            // Find the matching ')' respecting nested '$(' pairs.
+            const std::string::size_type end = findMatchingParen(s, pos + 2);
             if (end == std::string::npos)
                 break;
-            const std::string var = s.substr(pos + 2, end - pos - 2);
+            std::string var = s.substr(pos + 2, end - pos - 2);
+            // If the name itself contains nested references, resolve them first.
+            if (var.find("$(") != std::string::npos)
+                expandMSBuildVariables(var, properties);
             auto it = properties.find(var);
             if (it == properties.end()) {
                 // fall back to environment variable and cache for future passes
@@ -944,16 +965,20 @@ namespace {
 
         std::string parseIdentifier() {
             skipWhitespace();
-            const std::size_t begin = mPos;
+            std::string result;
             while (mPos < mCondition.size()) {
+                if (mCondition.compare(mPos, 2, "$(") == 0) {
+                    result += parsePropertyExpression();
+                    continue;
+                }
                 const auto c = static_cast<unsigned char>(mCondition[mPos]);
                 if (!std::isalnum(c) && c != '_' && c != '-')
                     break;
-                ++mPos;
+                result += mCondition[mPos++];
             }
-            if (begin == mPos)
+            if (result.empty())
                 throw std::runtime_error("Expected identifier in condition '" + mCondition + "'");
-            return mCondition.substr(begin, mPos - begin);
+            return result;
         }
 
         std::string parsePropertyExpression() {
@@ -1020,22 +1045,35 @@ namespace {
 
         std::string expandProperties(const std::string &input) const {
             std::string result = input;
-            std::size_t pos = 0;
-            while ((pos = result.find("$(", pos)) != std::string::npos) {
-                const std::size_t begin = pos + 2;
-                const std::size_t end = result.find(')', begin);
-                if (end == std::string::npos)
-                    break;
-                const std::string name = result.substr(begin, end - begin);
-                // Only expand simple property references here. Property methods
-                // are parsed by parsePropertyExpression().
-                if (name.find_first_of("()") != std::string::npos) {
-                    pos = end + 1;
-                    continue;
+            // Multi-pass so values that expand to further references are resolved.
+            // Cap at 50 to break genuine cycles.
+            const int maxPasses = 50;
+            for (int pass = 0; pass < maxPasses; ++pass) {
+                bool changed = false;
+                std::size_t pos = 0;
+                while ((pos = result.find("$(", pos)) != std::string::npos) {
+                    // Use nesting-aware search for the matching ')'.
+                    const std::size_t end = findMatchingParen(result, pos + 2);
+                    if (end == std::string::npos)
+                        break;
+                    std::string name = result.substr(pos + 2, end - pos - 2);
+                    // If the name itself contains nested references, resolve them first.
+                    if (name.find("$(") != std::string::npos)
+                        name = expandProperties(name);
+                    // Only expand simple property references here; skip method calls
+                    // (bare '(' remaining after nested expansion) — those are handled
+                    // by parsePropertyExpression().
+                    if (name.find('(') != std::string::npos) {
+                        pos = end + 1;
+                        continue;
+                    }
+                    const std::string value = getPropertyValue(name);
+                    result.replace(pos, end - pos + 1, value);
+                    pos += value.size();
+                    changed = true;
                 }
-                const std::string value = getPropertyValue(name);
-                result.replace(pos, end - pos + 1, value);
-                pos += value.size();
+                if (!changed)
+                    break;
             }
             return result;
         }
