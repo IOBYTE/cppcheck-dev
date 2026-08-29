@@ -1974,6 +1974,9 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
         return;
     const char *eText = node->GetText();
     std::string text(eText ? eText : "");
+    // Normalize native path separators before expansion so property values are
+    // stored with '/' and debug messages show normalized paths.
+    text = Path::fromNativeSeparators(std::move(text));
     const std::string original = properties[eName];
     findAndReplace(text, "$(" + std::string(eName) + ")", original);
     expandMSBuildVariables(text, properties);
@@ -1987,6 +1990,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, PropertiesMap 
         return;
     const char *eText = node->GetText();
     std::string text(eText ? eText : "");
+    text = Path::fromNativeSeparators(std::move(text));
     const std::string original = metadata[eName];
     findAndReplace(text, "%(" + std::string(eName) + ")", original);
     std::string::size_type pos = 0;
@@ -2010,7 +2014,7 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, Propert
     const char *eText = node->GetText();
     if (!eName || !eText || !conditionIsTrue(node, properties))
         return original;
-    std::string text(eText);
+    std::string text(Path::fromNativeSeparators(eText));
     findAndReplace(text, "%(" + std::string(eName) + ")", original);
     {
         std::string::size_type pos = 0;
