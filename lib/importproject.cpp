@@ -669,8 +669,11 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     properties["SolutionDir"] = Path::getPathFromFilename(absolutePath);
     properties["SolutionExt"] = Path::getFilenameExtensionInLowerCase(absolutePath);
     properties["SolutionPath"] = absolutePath;
+
     // Path::stripDirectoryPart doesn't work on windows with unix paths
-    properties["SolutionFileName"] = absolutePath.substr(absolutePath.rfind('/') + 1, absolutePath.size());
+    const auto slash = absolutePath.rfind('/');
+    properties["SolutionFileName"] = (slash != std::string::npos) ? absolutePath.substr(slash + 1) : absolutePath;
+
     std::string temp = properties["SolutionFileName"];
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     properties["SolutionName"] = temp;
@@ -935,7 +938,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
                 << ")"
                 << (context ? " in " : "")
                 << (context ? context : "")
-                << ": " << text << '\n';
+                << ": " << text;
         debugs.emplace_back(message.str());
         pos = end + 1;
     }
@@ -950,7 +953,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
                 << ")"
                 << (context ? " in " : "")
                 << (context ? context : "")
-                << ": " << text << '\n';
+                << ": " << text;
         debugs.emplace_back(message.str());
         pos = end + 1;
     }
@@ -1283,16 +1286,13 @@ namespace {
             const std::size_t count = std::max(lhs.size(), rhs.size());
 
             for (std::size_t i = 0; i < count; ++i) {
-                if (i >= lhs.size())
+                // Missing trailing components are treated as 0,
+                // so {17} == {17, 0, 0} and {17, 1} > {17, 0, 5} is correct.
+                const int l = (i < lhs.size()) ? lhs[i] : 0;
+                const int r = (i < rhs.size()) ? rhs[i] : 0;
+                if (l < r)
                     return -1;
-
-                if (i >= rhs.size())
-                    return 1;
-
-                if (lhs[i] < rhs[i])
-                    return -1;
-
-                if (lhs[i] > rhs[i])
+                if (l > r)
                     return 1;
             }
 
@@ -1344,7 +1344,7 @@ namespace {
                     pos = dot + 1;
                 }
 
-                if (parts.empty() || parts.size() > 4)
+                if (parts.empty())
                     return {};
 
                 return parts;
@@ -1360,6 +1360,14 @@ namespace {
                 if (!rhsVersion.empty()) {
                     const std::vector<int> currentVersion{ 18 };
                     return compareVersionResult(compareVersions(currentVersion, rhsVersion), op);
+                }
+            }
+
+            if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
+                const auto lhsVersion = parseVersion(lhs);
+                if (!lhsVersion.empty()) {
+                    const std::vector<int> currentVersion{ 18 };
+                    return compareVersionResult(compareVersions(lhsVersion, currentVersion), op);
                 }
             }
 
@@ -1383,7 +1391,13 @@ namespace {
     };
 
     bool evalCondition(const std::string &condition, const PropertiesMap &properties) {
-        return ConditionParser(condition, properties).parse();
+        try {
+            return ConditionParser(condition, properties).parse();
+        } catch (const std::exception &) {
+            // malformed or unhandled condition syntax (e.g. property functions,
+            // unknown methods, bare .Property access) — treat as false so import continues
+            return false;
+        }
     }
 
     bool conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
@@ -1486,7 +1500,8 @@ namespace {
 
         static void setMSBuildThis(const std::string &filename, PropertiesMap &properties) {
             properties["MSBuildThisFileFullPath"] = filename;
-            std::string temp = filename.substr(filename.rfind('/') + 1, filename.size());
+            const auto slash1 = filename.rfind('/');
+            std::string temp = (slash1 != std::string::npos) ? filename.substr(slash1 + 1) : filename;
             properties["MSBuildThisFile"] = temp;
             findAndReplace(temp, Path::getFilenameExtension(temp), "");
             properties["MSBuildThisFileName"] = temp;
@@ -1713,6 +1728,9 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
         } else if (hasName(e1, "AdditionalOptions", properties)) {
             auto &v = compile.metadata["AdditionalOptions"];
             v = getMetadata(e1, properties, compile.metadata, v);
+        } else if (hasName(e1, "AdditionalUsingDirectories", properties)) {
+            auto &v = compile.metadata["AdditionalUsingDirectories"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         }
     }
 
@@ -1894,7 +1912,11 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             }
 
             if (file.find("$(") != std::string::npos) {
-                // $(Platform), $(PlatformToolset), $(OutDir), $(IntDir), $(TargetName), $(TargetExt), $(LanguageStandard)
+                // $(Platform), $(PlatformToolset), $(TargetName), $(TargetExt), $(LanguageStandard)
+                properties["IntDir"] = "$(Platform)/$(Configuration)/";
+                properties["OutDir"] = "$(SolutionDir)$(Platform)/$(Configuration)/";
+                properties["GeneratedFilesDir"] = "$(IntDir)Generated Files/";
+
                 std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
                 if (!directoryBuildProps.empty()) {
                     ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, projectConfigurationList, importStack);
@@ -2065,6 +2087,9 @@ ImportProject::ImportResult ImportProject::importVcxitems(const std::string &ite
                     importCompile(e, itemsDir, properties, metadata, compileList);
                 }
             }
+        } else if (hasName(node, "PropertyGroup", properties)) {
+            for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
+                addProperty(e, properties);
         } else if (hasName(node, "ItemDefinitionGroup", properties)) {
             for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
                 if (hasName(e1, "ClCompile", properties)) {
@@ -2097,7 +2122,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties.emplace("VisualStudioVersion", "17.0");
 
     properties["ProjectPath"] = filename;
-    std::string temp = filename.substr(filename.rfind('/') + 1, filename.size());
+    const auto projSlash = filename.rfind('/');
+    std::string temp = (projSlash != std::string::npos) ? filename.substr(projSlash + 1) : filename;
     properties["ProjectFileName"] = temp;
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     properties["ProjectName"] = temp;
@@ -2118,11 +2144,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
 
-    // common defaults
-    properties["IntDir"] = "$(Platform)/$(Configuration)/";
-    properties["OutDir"] = "$(SolutionDir)$(Platform)/$(Configuration)/";
-    properties["GeneratedFilesDir"] = "$(IntDir)Generated Files/";
-
     MSBuildThis::setMSBuildThis(filename, properties);
 
     std::string projectDir = properties["ProjectDir"];
@@ -2139,7 +2160,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // Read MSBuildToolsVersion directly from <Project ToolsVersion="...">.
     // "Current" is the standard value for VS2019+ and is the correct fallback.
     const char *toolsVersion = rootnode->Attribute("ToolsVersion");
-    properties.emplace("MSBuildToolsVersion", toolsVersion ? toolsVersion : "Current");
+    properties["MSBuildToolsVersion"] = toolsVersion ? toolsVersion : "Current";
 
     // find all Visual Studio project configurations
     for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
@@ -2227,6 +2248,18 @@ bool ImportProject::importVcxproj(const std::string &filename,
                             } else {
                                 debugs.emplace_back("Could not import unknown file type \"" + file + "\"");
                             }
+                        }
+                    }
+                } else {
+                    // Unlabeled or other-labeled ImportGroup (e.g. ExtensionSettings,
+                    // ExtensionTargets) — process <Import> children like PropertySheets.
+                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
+                        if (hasName(e, "Import", properties)) {
+                            const char *projectAttribute = e->Attribute("Project");
+                            if (!projectAttribute)
+                                continue;
+                            if (importProject(e, projectDir, properties, metadata, projectConfigurationList, importStack) > ImportResult::NotResolvable)
+                                return false;
                         }
                     }
                 }
@@ -2863,8 +2896,10 @@ void ImportProject::selectOneVsConfig(Platform::Type platform)
         }
         const FileSettings &fs = *it;
         bool remove = false;
-        if (!startsWith(fs.cfg,"Debug"))
+        const std::string cfgName = fs.cfg.substr(0, fs.cfg.find('|'));
+        if (cfgName.size() < 5 || caseInsensitiveStringCompare(cfgName.substr(0, 5), "Debug") != 0)
             remove = true;
+
         if (platform == Platform::Type::Win64 && fs.platformType != Platform::Type::Win64)
             remove = true;
         else if (platform == Platform::Type::WinARM64 && fs.platformType != Platform::Type::WinARM64)
