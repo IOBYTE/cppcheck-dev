@@ -602,10 +602,9 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
 
         if (solutionPlatforms.empty())
             return importProjectForPlatform(vcxproj, "");
-        return std::all_of(solutionPlatforms.begin(), solutionPlatforms.end(),
-                           [&](const std::string &platform) {
-                               return importProjectForPlatform(vcxproj, platform);
-                           });
+        return std::all_of(solutionPlatforms.begin(), solutionPlatforms.end(), [&](const std::string &platform) {
+            return importProjectForPlatform(vcxproj, platform);
+        });
     };
 
     // Pass 2: walk <Project> and <Folder> elements
