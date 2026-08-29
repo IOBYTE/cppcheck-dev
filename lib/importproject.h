@@ -139,7 +139,7 @@ private:
 
         std::string name;
         std::string configuration;
-        enum : std::uint8_t { Win32, x64, Unknown } platform = Unknown;
+        enum : std::uint8_t { Win32, x64, ARM64, ARM, Unknown } platform = Unknown;
         std::string platformStr;
     };
 

@@ -909,6 +909,10 @@ ImportProject::ProjectConfiguration::ProjectConfiguration(const tinyxml2::XMLEle
                 platform = Win32;
             else if (platformStr == "x64")
                 platform = x64;
+            else if (platformStr == "ARM64")
+                platform = ARM64;
+            else if (platformStr == "ARM")
+                platform = ARM;
             else
                 platform = Unknown;
         }
@@ -1085,8 +1089,11 @@ namespace {
             static constexpr const char *ops[] = { "==", "!=", "<=", ">=", "<", ">" };
             for (const char *op : ops) {
                 // cppcheck-suppress useStlAlgorithm
-                if (match(op))
-                    return compare(lhs, op, parseValue()) ? "True" : "False";
+                if (match(op)) {
+                    const std::string rhs = parseValue();
+                    if (!mEvaluate) return "False";
+                    return compare(lhs, op, rhs) ? "True" : "False";
+                }
             }
 
             return lhs;
@@ -1465,12 +1472,12 @@ namespace {
 
         MSBuildThis(const std::string &filename, PropertiesMap &properties)
             : propertiesMap(properties)
-            , thisFile(properties.at("MSBuildThisFile"))
-            , thisFileName(properties.at("MSBuildThisFileName"))
-            , thisFileExtension(properties.at("MSBuildThisFileExtension"))
-            , thisFileDirectory(properties.at("MSBuildThisFileDirectory"))
-            , thisFileDirectoryNoRoot(properties.at("MSBuildThisFileDirectoryNoRoot"))
-            , thisFileFullPath(properties.at("MSBuildThisFileFullPath")) {
+            , thisFile(properties["MSBuildThisFile"])
+            , thisFileName(properties["MSBuildThisFileName"])
+            , thisFileExtension(properties["MSBuildThisFileExtension"])
+            , thisFileDirectory(properties["MSBuildThisFileDirectory"])
+            , thisFileDirectoryNoRoot(properties["MSBuildThisFileDirectoryNoRoot"])
+            , thisFileFullPath(properties["MSBuildThisFileFullPath"]) {
             setMSBuildThis(filename, properties);
         }
 
@@ -1994,7 +2001,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
         } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
             for (const tinyxml2::XMLElement *pcNode = node->FirstChildElement("ProjectConfiguration"); pcNode; pcNode = pcNode->NextSiblingElement("ProjectConfiguration")) {
                 const ProjectConfiguration pc(pcNode);
-                if (pc.platform != ProjectConfiguration::Unknown) {
+                if (!pc.configuration.empty()) {
                     // Deduplicate: the same config can arrive again when Directory.Build.props /
                     // Cpp.Build.props is re-imported inside the per-config loop.
                     const bool already = std::any_of(projectConfigurationList.cbegin(),
@@ -2253,6 +2260,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
             else if (pc.platform == ProjectConfiguration::x64) {
                 fs.platformType = Platform::Type::Win64;
                 fs.defines += ";_WIN64=1";
+            } else if (pc.platform == ProjectConfiguration::ARM64) {
+                fs.defines += ";_M_ARM64=1";
+            } else if (pc.platform == ProjectConfiguration::ARM) {
+                fs.defines += ";_M_ARM=1";
             }
 
             Standards::cppstd_t cppstd = Standards::CPPLatest;
