@@ -146,11 +146,12 @@ private:
     struct ItemGroupClCompile {
         explicit ItemGroupClCompile(std::string filename) : filename(std::move(filename)) {}
         std::string filename;
-        std::string additionalIncludeDirectories;
-        std::string forcedIncludeFiles;
-        std::string preprocessorDefinitions;
-        std::string languageStandard;
-        std::string additionalOptions;
+        MetadataMap metadata;
+        const std::string &get(const std::string &key) const {
+            static const std::string empty;
+            const auto it = metadata.find(key);
+            return (it != metadata.end()) ? it->second : empty;
+        }
     };
 
     bool importSln(std::istream &istr, const std::string &filename, const std::vector<std::string> &fileFilters);
@@ -183,7 +184,7 @@ private:
     bool simplifyPathWithVariables(std::string &s, PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
     void addMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, MetadataMap &metadata);
-    std::string getProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties, const std::string &original);
+    std::string getMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, const MetadataMap &metadata, const std::string &original);
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, PropertiesMap &properties);
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);

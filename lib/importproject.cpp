@@ -1408,14 +1408,15 @@ namespace {
 
 std::string ImportProject::toAbsolute(const std::string &path)
 {
-    if (Path::isAbsolute(path))
-        return Path::simplifyPath(path);
-    return Path::simplifyPath(Path::getCurrentPath() + "/" + path);
+    std::string internal(Path::fromNativeSeparators(path));
+    if (Path::isAbsolute(internal))
+        return Path::simplifyPath(internal);
+    return Path::simplifyPath(Path::getCurrentPath() + "/" + internal);
 }
 
 std::string ImportProject::toAbsolute(const std::string &filename, const std::string &baseDir, PropertiesMap &properties)
 {
-    std::string resolved(filename);
+    std::string resolved(Path::fromNativeSeparators(filename));
     if (!simplifyPathWithVariables(resolved, properties))
         return resolved;
 
@@ -1477,7 +1478,7 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     const char *eText = node->GetText();
     std::string text(eText ? eText : "");
     const std::string original = properties[eName];
-    findAndReplace(text, "%(" + std::string(eName) + ")", original);
+    findAndReplace(text, "$(" + std::string(eName) + ")", original);
     expandMSBuildVariables(text, properties);
     properties[eName] = text;
     checkUnexpandedExpressions(text, eName);
@@ -1489,18 +1490,36 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, PropertiesMap 
         return;
     const char *eText = node->GetText();
     std::string text(eText ? eText : "");
-    // Expand %(eName) self-reference first using the accumulated value before this update,
-    // so that "new;%(AdditionalIncludeDirectories)" correctly appends to existing entries.
     const std::string original = metadata[eName];
     findAndReplace(text, "%(" + std::string(eName) + ")", original);
-    // Expand any remaining %(OtherKey) references from the current metadata map.
-    // Do a single linear pass; MSBuild does not recursively expand metadata references.
+    std::string::size_type pos = 0;
+    while ((pos = text.find("%(", pos)) != std::string::npos) {
+        const std::string::size_type end = text.find(')', pos);
+        if (end == std::string::npos)
+            break;
+        const std::string key = text.substr(pos + 2, end - pos - 2);
+        const auto it = metadata.find(key);
+        const std::string replacement = (it != metadata.end()) ? it->second : std::string();
+        text.replace(pos, end - pos + 1, replacement);
+        pos += replacement.size();
+    }
+    expandMSBuildVariables(text, properties);
+    metadata[eName] = text;
+    checkUnexpandedExpressions(text, eName);
+}
+
+std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, const MetadataMap &metadata, const std::string &original) {
+    const char *eName = node->Name();
+    const char *eText = node->GetText();
+    if (!eName || !eText || !conditionIsTrue(node, properties))
+        return original;
+    std::string text(eText);
+    findAndReplace(text, "%(" + std::string(eName) + ")", original);
     {
         std::string::size_type pos = 0;
         while ((pos = text.find("%(", pos)) != std::string::npos) {
             const std::string::size_type end = text.find(')', pos);
-            if (end == std::string::npos)
-                break;
+            if (end == std::string::npos) break;
             const std::string key = text.substr(pos + 2, end - pos - 2);
             const auto it = metadata.find(key);
             const std::string replacement = (it != metadata.end()) ? it->second : std::string();
@@ -1508,20 +1527,6 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, PropertiesMap 
             pos += replacement.size();
         }
     }
-    // Expand $(PropertyName) references against the properties map, not metadata.
-    // Item metadata values commonly reference MSBuild properties such as $(ProjectDir).
-    expandMSBuildVariables(text, properties);
-    metadata[eName] = text;
-    checkUnexpandedExpressions(text, eName);
-}
-
-std::string ImportProject::getProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties, const std::string &original) {
-    const char *eName = node->Name();
-    const char *eText = node->GetText();
-    if (!eName || !eText || !conditionIsTrue(node, properties))
-        return original;
-    std::string text(eText);
-    findAndReplace(text, "%(" + std::string(eName) + ")", original);
     expandMSBuildVariables(text, properties);
     checkUnexpandedExpressions(text, eName);
     return text;
@@ -1565,11 +1570,7 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
 
     ItemGroupClCompile compile(toInclude);
     // a file with no override of its own inherits the ItemDefinitionGroup value outright
-    compile.additionalIncludeDirectories = metadata["AdditionalIncludeDirectories"];
-    compile.forcedIncludeFiles = metadata["ForcedIncludeFiles"];
-    compile.preprocessorDefinitions = metadata["PreprocessorDefinitions"];
-    compile.languageStandard = metadata["LanguageStandard"];
-    compile.additionalOptions = metadata["AdditionalOptions"];
+    compile.metadata = metadata;
     bool excludedFromBuild = false;
 
     for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
@@ -1583,25 +1584,31 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                 break;
             }
         } else if (hasName(e1, "AdditionalIncludeDirectories", properties)) {
-            compile.additionalIncludeDirectories = getProperty(e1, properties, compile.additionalIncludeDirectories);
+            auto &v = compile.metadata["AdditionalIncludeDirectories"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         } else if (hasName(e1, "ForcedIncludeFiles", properties)) {
-            compile.forcedIncludeFiles = getProperty(e1, properties, compile.forcedIncludeFiles);
+            auto &v = compile.metadata["ForcedIncludeFiles"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         } else if (hasName(e1, "PreprocessorDefinitions", properties)) {
-            compile.preprocessorDefinitions = getProperty(e1, properties, compile.preprocessorDefinitions);
+            auto &v = compile.metadata["PreprocessorDefinitions"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         } else if (hasName(e1, "LanguageStandard", properties)) {
-            compile.languageStandard = getProperty(e1, properties, compile.languageStandard);
+            auto &v = compile.metadata["LanguageStandard"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         } else if (hasName(e1, "AdditionalOptions", properties)) {
-            compile.additionalOptions = getProperty(e1, properties, compile.additionalOptions);
+            auto &v = compile.metadata["AdditionalOptions"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         }
     }
 
-    if (!compile.additionalOptions.empty()) {
+    if (!compile.metadata["AdditionalOptions"].empty()) {
         std::vector<std::string> args;
         std::string arg;
         bool quoted = false;
+        const std::string &additionalOptions = compile.metadata["AdditionalOptions"];
 
-        for (std::size_t i = 0; i < compile.additionalOptions.size(); ++i) {
-            const char c = compile.additionalOptions[i];
+        for (std::size_t i = 0; i < additionalOptions.size(); ++i) {
+            const char c = additionalOptions[i];
 
             if (c == '"') {
                 quoted = !quoted;
@@ -1632,9 +1639,9 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                     define = args[++i];
 
                 if (!define.empty()) {
-                    if (!compile.preprocessorDefinitions.empty())
-                        compile.preprocessorDefinitions += ';';
-                    compile.preprocessorDefinitions += define;
+                    if (!compile.metadata["PreprocessorDefinitions"].empty())
+                        compile.metadata["PreprocessorDefinitions"] += ';';
+                    compile.metadata["PreprocessorDefinitions"] += define;
                 }
 
             } else if (option.size() >= 2 &&
@@ -1648,22 +1655,22 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                     path = args[++i];
 
                 if (!path.empty()) {
-                    if (!compile.additionalIncludeDirectories.empty())
-                        compile.additionalIncludeDirectories += ';';
-                    compile.additionalIncludeDirectories += path;
+                    if (!compile.metadata["AdditionalIncludeDirectories"].empty())
+                        compile.metadata["AdditionalIncludeDirectories"] += ';';
+                    compile.metadata["AdditionalIncludeDirectories"] += path;
                 }
             } else if (option == "/std:c++11" || option == "-std=c++11") {
-                compile.languageStandard = "stdcpp11";
+                compile.metadata["LanguageStandard"] = "stdcpp11";
             } else if (option == "/std:c++14" || option == "-std=c++14") {
-                compile.languageStandard = "stdcpp14";
+                compile.metadata["LanguageStandard"] = "stdcpp14";
             } else if (option == "/std:c++17" || option == "-std=c++17") {
-                compile.languageStandard = "stdcpp17";
+                compile.metadata["LanguageStandard"] = "stdcpp17";
             } else if (option == "/std:c++20" || option == "-std=c++20") {
-                compile.languageStandard = "stdcpp20";
+                compile.metadata["LanguageStandard"] = "stdcpp20";
             } else if (option == "/std:c++23" || option == "-std=c++23") {
-                compile.languageStandard = "stdcpp23";
+                compile.metadata["LanguageStandard"] = "stdcpp23";
             } else if (option == "/std:c++latest" || option == "-std=c++latest") {
-                compile.languageStandard = "stdcpplatest";
+                compile.metadata["LanguageStandard"] = "stdcpplatest";
             }
         }
     }
@@ -1691,29 +1698,37 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             return ImportResult::NotResolvable;
 
         if (file.find("Microsoft.Cpp.targets") != std::string::npos) {
-            std::string forceImportBeforeCppTargets = properties["ForceImportBeforeCppTargets"];
-            if (!forceImportBeforeCppTargets.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportBeforeCppTargets, properties, metadata, projectConfigurationList, importStack);
+            auto it = properties.find("ForceImportBeforeCppTargets");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportBeforeCppTargets + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
 
-            std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
-            if (!directoryBuildTargets.empty()) {
-                ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, projectConfigurationList, importStack);
+            if (file.find("$(") != std::string::npos) {
+                std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
+                if (!directoryBuildTargets.empty()) {
+                    ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, projectConfigurationList, importStack);
+                    if (result > ImportResult::NotResolvable) {
+                        errors.emplace_back("Could not import \"" + directoryBuildTargets + "\" - " + importResultStr(result));
+                        return result;
+                    }
+                }
+            } else {
+                ImportResult result = importPropsOrTargets(file, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + directoryBuildTargets + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
                     return result;
                 }
             }
 
-            std::string forceImportAfterCppTargets = properties["ForceImportAfterCppTargets"];
-            if (!forceImportAfterCppTargets.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportAfterCppTargets, properties, metadata, projectConfigurationList, importStack);
+            it = properties.find("ForceImportAfterCppTargets");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportAfterCppTargets + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
@@ -1722,20 +1737,30 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         }
 
         if (file.find("Microsoft.Cpp.Default.props") != std::string::npos) {
-            std::string forceImportBeforeCppDefaultProp = properties["ForceImportBeforeCppDefaultProps"];
-            if (!forceImportBeforeCppDefaultProp.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportBeforeCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
+            auto it = properties.find("ForceImportBeforeCppDefaultProps");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportBeforeCppDefaultProp + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
 
-            std::string forceImportAfterCppDefaultProp = properties["ForceImportAfterCppDefaultProps"];
-            if (!forceImportAfterCppDefaultProp.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportAfterCppDefaultProp, properties, metadata, projectConfigurationList, importStack);
+            if (file.find("$(") != std::string::npos) {
+                // $(Configuration) = Debug, $(ConfigurationType) = Application, $(ApplicationType)
+            } else {
+                ImportResult result = importPropsOrTargets(file, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportAfterCppDefaultProp + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            it = properties.find("ForceImportAfterCppDefaultProps");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
@@ -1744,20 +1769,38 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         }
 
         if (file.find("Microsoft.Cpp.props") != std::string::npos) {
-            std::string forceImportBeforeCppProps = properties["ForceImportBeforeCppProps"];
-            if (!forceImportBeforeCppProps.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportBeforeCppProps, properties, metadata, projectConfigurationList, importStack);
+            auto it = properties.find("ForceImportBeforeCppProps");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportBeforeCppProps + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
 
-            std::string forceImportAfterCppProps = properties["ForceImportAfterCppProps"];
-            if (!forceImportAfterCppProps.empty()) {
-                ImportResult result = importPropsOrTargets(forceImportAfterCppProps, properties, metadata, projectConfigurationList, importStack);
+            if (file.find("$(") != std::string::npos) {
+                // $(Platform), $(PlatformToolset), $(OutDir), $(IntDir), $(TargetName), $(TargetExt), $(LanguageStandard)
+                std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
+                if (!directoryBuildProps.empty()) {
+                    ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, projectConfigurationList, importStack);
+                    if (result > ImportResult::NotResolvable) {
+                        errors.emplace_back("Could not import \"" + directoryBuildProps + "\" - " + importResultStr(result));
+                        return result;
+                    }
+                }
+            } else {
+                ImportResult result = importPropsOrTargets(file, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + forceImportAfterCppProps + "\" - " + importResultStr(result));
+                    errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
+                    return result;
+                }
+            }
+
+            it = properties.find("ForceImportAfterCppProps");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
                     return result;
                 }
             }
@@ -2022,15 +2065,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
         properties["Configuration"] = pc.configuration;
         properties["Platform"] = pc.platformStr;
 
-        std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
-        if (!directoryBuildProps.empty()) {
-            ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, projectConfigurationList, importStack);
-            if (result > ImportResult::NotResolvable) {
-                errors.emplace_back("Could not import \"" + directoryBuildProps + "\" - " + importResultStr(result));
-                return false;
-            }
-        }
-
         for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
             if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
@@ -2118,7 +2152,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
 
             Standards::cppstd_t cppstd = Standards::CPPLatest;
-            const std::string &languageStandard = compile.languageStandard;
+            const std::string &languageStandard = compile.get("LanguageStandard");
             if (languageStandard == "stdcpp11")
                 cppstd = Standards::CPP11;
             else if (languageStandard == "stdcpp14")
@@ -2133,7 +2167,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 cppstd = Standards::CPPLatest;
             fs.standard = Standards::getCPP(cppstd);
 
-            std::string enableEnhancedInstructionSet = properties["EnableEnhancedInstructionSet"];
+            std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
             if (enableEnhancedInstructionSet == "StreamingSIMDExtensions")
                 fs.defines += ";__SSE__";
             else if (enableEnhancedInstructionSet == "StreamingSIMDExtensions2")
@@ -2159,13 +2193,16 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
 
             std::string defines = fs.defines;
-            if (!compile.preprocessorDefinitions.empty())
-                defines += (";" + compile.preprocessorDefinitions);
+            if (!compile.get("PreprocessorDefinitions").empty())
+                defines += (";" + compile.get("PreprocessorDefinitions"));
             fsSetDefines(fs, defines);
-            fsSetIncludePaths(fs, projectDir, toStringList(properties["IncludePath"]), properties);
+            {
+                const auto includePathIt = properties.find("IncludePath");
+                fsSetIncludePaths(fs, projectDir, toStringList(includePathIt != properties.end() ? includePathIt->second : std::string()), properties);
+            }
             fs.systemIncludePaths = std::move(fs.includePaths);
-            fsSetIncludePaths(fs, projectDir, toStringList(compile.additionalIncludeDirectories), properties);
-            fs.forcedIncludes = toStringList(compile.forcedIncludeFiles);
+            fsSetIncludePaths(fs, projectDir, toStringList(compile.get("AdditionalIncludeDirectories")), properties);
+            fs.forcedIncludes = toStringList(compile.get("ForcedIncludeFiles"));
             for (auto &forcedInclude : fs.forcedIncludes)
                 forcedInclude = toAbsolute(forcedInclude, projectDir, properties);
 
