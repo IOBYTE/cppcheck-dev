@@ -1919,11 +1919,14 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
 
 bool ImportProject::simplifyPathWithVariables(std::string &s, PropertiesMap &properties)
 {
+    // Normalize native separators before expansion so the expander sees clean
+    // paths and debug messages report '/' not '\\'.
+    s = Path::fromNativeSeparators(std::move(s));
     expandMSBuildVariables(s, properties);
     checkUnexpandedExpressions(s, "path");
     if (s.find("$(") != std::string::npos)
         return false;
-    // Property values may contain native separators (\); normalize after expansion.
+    // Property values substituted above may also carry native separators; normalize again.
     s = Path::fromNativeSeparators(std::move(s));
     s = Path::simplifyPath(std::move(s));
     return true;
