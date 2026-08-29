@@ -2261,8 +2261,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 fs.platformType = Platform::Type::Win64;
                 fs.defines += ";_WIN64=1";
             } else if (pc.platform == ProjectConfiguration::ARM64) {
+                fs.platformType = Platform::Type::WinARM64;
                 fs.defines += ";_M_ARM64=1";
             } else if (pc.platform == ProjectConfiguration::ARM) {
+                fs.platformType = Platform::Type::WinARM;
                 fs.defines += ";_M_ARM=1";
             }
 
@@ -2860,9 +2862,16 @@ void ImportProject::selectOneVsConfig(Platform::Type platform)
         bool remove = false;
         if (!startsWith(fs.cfg,"Debug"))
             remove = true;
-        if (platform == Platform::Type::Win64 && fs.platformType != platform)
+        if (platform == Platform::Type::Win64 && fs.platformType != Platform::Type::Win64)
             remove = true;
-        else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) && fs.platformType == Platform::Type::Win64)
+        else if (platform == Platform::Type::WinARM64 && fs.platformType != Platform::Type::WinARM64)
+            remove = true;
+        else if (platform == Platform::Type::WinARM && fs.platformType != Platform::Type::WinARM)
+            remove = true;
+        else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) &&
+                 (fs.platformType == Platform::Type::Win64 ||
+                  fs.platformType == Platform::Type::WinARM64 ||
+                  fs.platformType == Platform::Type::WinARM))
             remove = true;
         else if (filenames.find(fs.filename()) != filenames.end())
             remove = true;
@@ -2887,9 +2896,16 @@ void ImportProject::selectVsConfigurations(Platform::Type platform, const std::v
         bool remove = false;
         if (std::find(configurations.begin(), configurations.end(), config) == configurations.end())
             remove = true;
-        if (platform == Platform::Type::Win64 && fs.platformType != platform)
+        if (platform == Platform::Type::Win64 && fs.platformType != Platform::Type::Win64)
             remove = true;
-        else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) && fs.platformType == Platform::Type::Win64)
+        else if (platform == Platform::Type::WinARM64 && fs.platformType != Platform::Type::WinARM64)
+            remove = true;
+        else if (platform == Platform::Type::WinARM && fs.platformType != Platform::Type::WinARM)
+            remove = true;
+        else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) &&
+                 (fs.platformType == Platform::Type::Win64 ||
+                  fs.platformType == Platform::Type::WinARM64 ||
+                  fs.platformType == Platform::Type::WinARM))
             remove = true;
         if (remove) {
             it = fileSettings.erase(it);
