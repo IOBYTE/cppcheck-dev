@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -385,6 +386,297 @@ static std::string applyPropertyMethod(std::string value,
     throw std::runtime_error("Unhandled method '" + method + "'");
 }
 
+// Evaluate a $([ClassName]::Method(args)) static property function.
+// Returns an empty string for unknown or unimplementable functions rather
+// than throwing, so import can continue gracefully.
+static std::string applyMSBuildStaticFunction(const std::string &className,
+                                              const std::string &member,
+                                              const std::vector<std::string> &args)
+{
+    const auto toInt = [](const std::string &s, long &out) -> bool {
+        if (s.empty()) return false;
+        char *end = nullptr;
+        out = std::strtol(s.c_str(), &end, 10);
+        return end != s.c_str() && *end == '\0';
+    };
+
+    if (caseInsensitiveStringCompare(className, "MSBuild") == 0) {
+
+        // $([MSBuild]::IsOSPlatform('Windows'|'Linux'|'OSX'))
+        if (caseInsensitiveStringCompare(member, "IsOSPlatform") == 0 && args.size() == 1) {
+#if defined(_WIN32)
+            const bool onWindows = true, onLinux = false, onOSX = false;
+#elif defined(__APPLE__)
+            const bool onWindows = false, onLinux = false, onOSX = true;
+#else
+            const bool onWindows = false, onLinux = true, onOSX = false;
+#endif
+            if (caseInsensitiveStringCompare(args[0], "Windows") == 0)
+                return onWindows ? "True" : "False";
+            if (caseInsensitiveStringCompare(args[0], "Linux") == 0)
+                return onLinux ? "True" : "False";
+            if (caseInsensitiveStringCompare(args[0], "OSX") == 0 ||
+                caseInsensitiveStringCompare(args[0], "MacOS") == 0)
+                return onOSX ? "True" : "False";
+            return "False";
+        }
+
+        // Arithmetic: Add, Subtract, Multiply, Divide, Modulo
+        if (args.size() == 2) {
+            long a = 0, b = 0;
+            if (toInt(args[0], a) && toInt(args[1], b)) {
+                if (caseInsensitiveStringCompare(member, "Add") == 0)
+                    return std::to_string(a + b);
+                if (caseInsensitiveStringCompare(member, "Subtract") == 0)
+                    return std::to_string(a - b);
+                if (caseInsensitiveStringCompare(member, "Multiply") == 0)
+                    return std::to_string(a * b);
+                if (caseInsensitiveStringCompare(member, "Divide") == 0 && b != 0)
+                    return std::to_string(a / b);
+                if (caseInsensitiveStringCompare(member, "Modulo") == 0 && b != 0)
+                    return std::to_string(a % b);
+            }
+            // $([MSBuild]::ValueOrDefault(value, default))
+            if (caseInsensitiveStringCompare(member, "ValueOrDefault") == 0)
+                return args[0].empty() ? args[1] : args[0];
+            // $([MSBuild]::MakeRelative(base, path)) — approximate: return path unchanged
+            if (caseInsensitiveStringCompare(member, "MakeRelative") == 0)
+                return args[1];
+        }
+
+        if (args.size() == 1) {
+            // $([MSBuild]::EnsureTrailingSlash(path))
+            if (caseInsensitiveStringCompare(member, "EnsureTrailingSlash") == 0) {
+                std::string s = args[0];
+                if (!s.empty() && s.back() != '/' && s.back() != '\\')
+                    s += '/';
+                return s;
+            }
+            // $([MSBuild]::NormalizePath(path))
+            if (caseInsensitiveStringCompare(member, "NormalizePath") == 0) {
+                std::string s = args[0];
+                for (char &c : s) if (c == '\\') c = '/';
+                return s;
+            }
+            // $([MSBuild]::GetTargetPlatformVersion(version)) — pass through
+            if (caseInsensitiveStringCompare(member, "GetTargetPlatformVersion") == 0)
+                return args[0];
+            // filesystem searches — not feasible during import
+            if (caseInsensitiveStringCompare(member, "GetDirectoryNameOfFileAbove") == 0 ||
+                caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0)
+                return "";
+        }
+
+        if (args.empty()) {
+            if (caseInsensitiveStringCompare(member, "GetCurrentToolsVersion") == 0)
+                return "Current";
+        }
+    }
+
+    if (caseInsensitiveStringCompare(className, "System.Environment") == 0) {
+        // $([System.Environment]::GetEnvironmentVariable('NAME'))
+        if (caseInsensitiveStringCompare(member, "GetEnvironmentVariable") == 0 && args.size() == 1) {
+            const char *env = std::getenv(args[0].c_str());
+            return env ? env : "";
+        }
+        // $([System.Environment]::GetFolderPath(SpecialFolder.X))
+        if (caseInsensitiveStringCompare(member, "GetFolderPath") == 0 && args.size() == 1) {
+            const char *pf = std::getenv("ProgramFiles");
+            if ((caseInsensitiveStringCompare(args[0], "ProgramFiles") == 0 ||
+                 caseInsensitiveStringCompare(args[0], "ProgramFilesX86") == 0) && pf)
+                return pf;
+            return "";
+        }
+    }
+
+    if (caseInsensitiveStringCompare(className, "System.IO.Path") == 0) {
+        if (args.size() == 1) {
+            if (caseInsensitiveStringCompare(member, "GetFileName") == 0) {
+                const auto slash = args[0].find_last_of("/\\");
+                return slash != std::string::npos ? args[0].substr(slash + 1) : args[0];
+            }
+            if (caseInsensitiveStringCompare(member, "GetFileNameWithoutExtension") == 0) {
+                const auto slash = args[0].find_last_of("/\\");
+                std::string name = slash != std::string::npos ? args[0].substr(slash + 1) : args[0];
+                const auto dot = name.rfind('.');
+                return dot != std::string::npos ? name.substr(0, dot) : name;
+            }
+            if (caseInsensitiveStringCompare(member, "GetDirectoryName") == 0) {
+                const auto slash = args[0].find_last_of("/\\");
+                return slash != std::string::npos ? args[0].substr(0, slash) : "";
+            }
+            if (caseInsensitiveStringCompare(member, "GetExtension") == 0) {
+                const auto dot = args[0].rfind('.');
+                return dot != std::string::npos ? args[0].substr(dot) : "";
+            }
+            if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0)
+                return Path::isAbsolute(args[0]) ? "True" : "False";
+        }
+        if (args.size() == 2 && caseInsensitiveStringCompare(member, "Combine") == 0) {
+            if (Path::isAbsolute(args[1]))
+                return args[1];
+            const std::string sep =
+                (!args[0].empty() && args[0].back() != '/' && args[0].back() != '\\') ? "/" : "";
+            return args[0] + sep + args[1];
+        }
+    }
+
+    if (caseInsensitiveStringCompare(className, "System.String") == 0) {
+        if (caseInsensitiveStringCompare(member, "IsNullOrEmpty") == 0 && args.size() == 1)
+            return args[0].empty() ? "True" : "False";
+        if (caseInsensitiveStringCompare(member, "IsNullOrWhiteSpace") == 0 && args.size() == 1) {
+            for (const char c : args[0])
+                if (!std::isspace(static_cast<unsigned char>(c))) return "False";
+            return "True";
+        }
+        if (caseInsensitiveStringCompare(member, "Concat") == 0) {
+            std::string result;
+            for (const std::string &a : args) result += a;
+            return result;
+        }
+        if (caseInsensitiveStringCompare(member, "Join") == 0 && args.size() >= 2) {
+            std::string result;
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                if (i > 1) result += args[0];
+                result += args[i];
+            }
+            return result;
+        }
+        // Format — very rough: replace {0},{1},... with positional args
+        if (caseInsensitiveStringCompare(member, "Format") == 0 && !args.empty()) {
+            std::string result = args[0];
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                const std::string placeholder = "{" + std::to_string(i - 1) + "}";
+                std::size_t pos = 0;
+                while ((pos = result.find(placeholder, pos)) != std::string::npos) {
+                    result.replace(pos, placeholder.size(), args[i]);
+                    pos += args[i].size();
+                }
+            }
+            return result;
+        }
+    }
+
+    if (caseInsensitiveStringCompare(className, "System.Math") == 0) {
+        const auto toDouble = [](const std::string &s, double &out) -> bool {
+            if (s.empty()) return false;
+            char *end = nullptr;
+            out = std::strtod(s.c_str(), &end);
+            return end != s.c_str() && *end == '\0';
+        };
+        if (args.size() == 1) {
+            double x = 0;
+            if (toDouble(args[0], x)) {
+                if (caseInsensitiveStringCompare(member, "Abs") == 0)
+                    return std::to_string(x < 0 ? -x : x);
+                if (caseInsensitiveStringCompare(member, "Floor") == 0)
+                    return std::to_string(static_cast<long long>(x >= 0 ? x : x - 1));
+                if (caseInsensitiveStringCompare(member, "Ceiling") == 0)
+                    return std::to_string(static_cast<long long>(x <= 0 ? x : x + 1));
+                if (caseInsensitiveStringCompare(member, "Round") == 0)
+                    return std::to_string(static_cast<long long>(x >= 0 ? x + 0.5 : x - 0.5));
+                if (caseInsensitiveStringCompare(member, "Sqrt") == 0 && x >= 0)
+                    return std::to_string(std::sqrt(x));
+                if (caseInsensitiveStringCompare(member, "Log") == 0 && x > 0)
+                    return std::to_string(std::log(x));
+                if (caseInsensitiveStringCompare(member, "Log10") == 0 && x > 0)
+                    return std::to_string(std::log10(x));
+            }
+        }
+        if (args.size() == 2) {
+            double a = 0, b = 0;
+            if (toDouble(args[0], a) && toDouble(args[1], b)) {
+                if (caseInsensitiveStringCompare(member, "Max") == 0)
+                    return std::to_string(a > b ? a : b);
+                if (caseInsensitiveStringCompare(member, "Min") == 0)
+                    return std::to_string(a < b ? a : b);
+                if (caseInsensitiveStringCompare(member, "Pow") == 0)
+                    return std::to_string(std::pow(a, b));
+            }
+        }
+    }
+
+    // $([MSBuild]::Escape / Unescape) — encode/decode MSBuild special chars as %XX
+    if (caseInsensitiveStringCompare(className, "MSBuild") == 0 && args.size() == 1) {
+        if (caseInsensitiveStringCompare(member, "Escape") == 0) {
+            static const char special[] = "%$@';?*!";
+            std::string result;
+            for (const unsigned char c : args[0]) {
+                if (std::strchr(special, static_cast<char>(c))) {
+                    const char hex[] = "0123456789ABCDEF";
+                    result += '%';
+                    result += hex[(c >> 4) & 0xF];
+                    result += hex[c & 0xF];
+                } else {
+                    result += static_cast<char>(c);
+                }
+            }
+            return result;
+        }
+        if (caseInsensitiveStringCompare(member, "Unescape") == 0) {
+            std::string result;
+            const std::string &s = args[0];
+            for (std::size_t i = 0; i < s.size(); ++i) {
+                if (s[i] == '%' && i + 2 < s.size() &&
+                    std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+                    std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+                    const auto nibble = [](char c) -> unsigned char {
+                        if (c >= '0' && c <= '9') return static_cast<unsigned char>(c - '0');
+                        if (c >= 'a' && c <= 'f') return static_cast<unsigned char>(c - 'a' + 10);
+                        return static_cast<unsigned char>(c - 'A' + 10);
+                    };
+                    result += static_cast<char>((nibble(s[i + 1]) << 4) | nibble(s[i + 2]));
+                    i += 2;
+                } else {
+                    result += s[i];
+                }
+            }
+            return result;
+        }
+        // Bitwise operations
+        {
+            long a = 0;
+            if (toInt(args[0], a)) {
+                if (caseInsensitiveStringCompare(member, "BitwiseNot") == 0)
+                    return std::to_string(~a);
+            }
+        }
+    }
+
+    if (caseInsensitiveStringCompare(className, "MSBuild") == 0 && args.size() == 2) {
+        long a = 0, b = 0;
+        if (toInt(args[0], a) && toInt(args[1], b)) {
+            if (caseInsensitiveStringCompare(member, "BitwiseAnd") == 0)
+                return std::to_string(a & b);
+            if (caseInsensitiveStringCompare(member, "BitwiseOr") == 0)
+                return std::to_string(a | b);
+            if (caseInsensitiveStringCompare(member, "BitwiseXor") == 0)
+                return std::to_string(a ^ b);
+        }
+    }
+
+    // $([MSBuild]::GetRegistryValue / GetRegistryValueFromView)
+    // Returns empty on non-Windows; on Windows would need registry access.
+    if (caseInsensitiveStringCompare(className, "MSBuild") == 0 &&
+        (caseInsensitiveStringCompare(member, "GetRegistryValue") == 0 ||
+         caseInsensitiveStringCompare(member, "GetRegistryValueFromView") == 0))
+        return "";
+
+    // $([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(...))
+    // Arg is itself a static property like $([...OSPlatform]::Windows) which
+    // expands to the platform name string via the same mechanism.
+    if (caseInsensitiveStringCompare(className, "System.Runtime.InteropServices.RuntimeInformation") == 0 &&
+        caseInsensitiveStringCompare(member, "IsOSPlatform") == 0 && args.size() == 1)
+        return applyMSBuildStaticFunction("MSBuild", "IsOSPlatform", args);
+
+    // $([System.Runtime.InteropServices.OSPlatform]::Windows|Linux|OSX) — static property
+    if (caseInsensitiveStringCompare(className, "System.Runtime.InteropServices.OSPlatform") == 0)
+        return member;  // return the platform name ("Windows", "Linux", "OSX") as a string
+
+    // Unknown class or method — return empty so import continues
+    return "";
+}
+
 // Expands $(Name) and $(Name.Method(args)) references in property value strings.
 // Unknown variables are left unexpanded. Use expandPropertyValue() to invoke.
 struct PropertyValueExpander {
@@ -447,10 +739,43 @@ struct PropertyValueExpander {
     }
 
     // Parses and evaluates $(Name[.Method(args)…]) starting at mPos.
+    // Also handles $([ClassName]::Method(args)) static property functions.
     // If the variable is unknown the token is left unchanged and mPos advances past it.
     std::string tryParseExpr() {
         const std::size_t start = mPos;
         mPos += 2;  // skip "$("
+
+        // $([ClassName]::Method(args)) — static property function
+        if (mPos < mStr.size() && mStr[mPos] == '[') {
+            ++mPos;  // skip '['
+            std::string className;
+            while (mPos < mStr.size() && mStr[mPos] != ']')
+                className += mStr[mPos++];
+            if (mPos < mStr.size()) ++mPos;  // skip ']'
+            if (mPos + 1 < mStr.size() && mStr[mPos] == ':' && mStr[mPos + 1] == ':')
+                mPos += 2;  // skip '::'
+            std::string member;
+            while (mPos < mStr.size()) {
+                const auto c = static_cast<unsigned char>(mStr[mPos]);
+                if (!std::isalnum(c) && c != '_') break;
+                member += mStr[mPos++];
+            }
+            std::vector<std::string> args;
+            if (mPos < mStr.size() && mStr[mPos] == '(') {
+                ++mPos;  // skip '('
+                while (mPos < mStr.size() && mStr[mPos] != ')') {
+                    args.push_back(parseArg());
+                    while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+                        ++mPos;
+                    if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
+                }
+                if (mPos < mStr.size()) ++mPos;  // skip inner ')'
+            }
+            if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip outer ')'
+            mChanged = true;
+            return applyMSBuildStaticFunction(className, member, args);
+        }
+
         const std::string name = parseIdentifier();
         if (name.empty() || !isKnown(name)) {
             const std::size_t end = findMatchingParen(mStr, start + 2);
@@ -671,6 +996,7 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     properties["SolutionPath"] = absolutePath;
 
     // Path::stripDirectoryPart doesn't work on windows with unix paths
+    // absolutePath is already normalized to '/' by toAbsolute()
     const auto slash = absolutePath.rfind('/');
     properties["SolutionFileName"] = (slash != std::string::npos) ? absolutePath.substr(slash + 1) : absolutePath;
 
@@ -1207,6 +1533,38 @@ namespace {
 
         std::string parsePropertyExpression() {
             expect("$(");
+
+            // $([ClassName]::Method(args)) — static property function
+            if (mPos < mCondition.size() && mCondition[mPos] == '[') {
+                ++mPos;  // skip '['
+                std::string className;
+                while (mPos < mCondition.size() && mCondition[mPos] != ']')
+                    className += mCondition[mPos++];
+                if (mPos < mCondition.size()) ++mPos;  // skip ']'
+                if (mPos + 1 < mCondition.size() && mCondition[mPos] == ':' && mCondition[mPos + 1] == ':')
+                    mPos += 2;  // skip '::'
+                std::string member;
+                while (mPos < mCondition.size()) {
+                    const auto c = static_cast<unsigned char>(mCondition[mPos]);
+                    if (!std::isalnum(c) && c != '_') break;
+                    member += mCondition[mPos++];
+                }
+                std::vector<std::string> args;
+                if (mPos < mCondition.size() && mCondition[mPos] == '(') {
+                    ++mPos;  // skip '('
+                    skipWhitespace();
+                    if (!match(")")) {
+                        do {
+                            args.push_back(parseValue());
+                            skipWhitespace();
+                        } while (match(","));
+                        expect(")");
+                    }
+                }
+                expect(")");  // outer closing paren of $(...)
+                return mEvaluate ? applyMSBuildStaticFunction(className, member, args) : std::string();
+            }
+
             std::string value = getPropertyValue(parseIdentifier());
 
             while (true) {
@@ -1459,6 +1817,8 @@ namespace {
 
     std::string findFile(const std::string &startDirectory, const std::string &file)
     {
+        // startDirectory comes from MSBuildThisFileDirectory which is already
+        // normalized to '/' separators by Path::simplifyPath.
         std::string currentDir = startDirectory;
         if (currentDir.back() == '/' && currentDir.size() > 1 && currentDir[currentDir.size() - 2] != ':')
             currentDir.pop_back();
@@ -1469,7 +1829,7 @@ namespace {
                 return targetFile;
             if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
                 break;
-            size_t lastSlash = currentDir.find_last_of('/');
+            size_t lastSlash = currentDir.rfind('/');
             if (lastSlash == std::string::npos)
                 break;
             currentDir.resize(lastSlash);
@@ -1499,18 +1859,20 @@ namespace {
         }
 
         static void setMSBuildThis(const std::string &filename, PropertiesMap &properties) {
-            properties["MSBuildThisFileFullPath"] = filename;
-            const auto slash1 = filename.rfind('/');
-            std::string temp = (slash1 != std::string::npos) ? filename.substr(slash1 + 1) : filename;
+            // Normalize once so all subsequent path ops can assume '/' separators.
+            const std::string nfilename = Path::simplifyPath(Path::fromNativeSeparators(filename));
+            properties["MSBuildThisFileFullPath"] = nfilename;
+            const auto slash1 = nfilename.rfind('/');
+            std::string temp = (slash1 != std::string::npos) ? nfilename.substr(slash1 + 1) : nfilename;
             properties["MSBuildThisFile"] = temp;
             findAndReplace(temp, Path::getFilenameExtension(temp), "");
             properties["MSBuildThisFileName"] = temp;
-            properties["MSBuildThisFileDirectory"] = Path::simplifyPath(Path::getPathFromFilename(filename));
-            temp = Path::simplifyPath(Path::getPathFromFilename(filename));
+            properties["MSBuildThisFileDirectory"] = Path::getPathFromFilename(nfilename);
+            temp = Path::getPathFromFilename(nfilename);
             std::string::size_type pos = temp.find('/', 0);
             temp.erase(0, pos + 1);
             properties["MSBuildThisFileDirectoryNoRoot"] = temp;
-            properties["MSBuildThisFileExtension"] = Path::getFilenameExtensionInLowerCase(filename);
+            properties["MSBuildThisFileExtension"] = Path::getFilenameExtensionInLowerCase(nfilename);
         }
 
         ~MSBuildThis() {
@@ -1561,6 +1923,8 @@ bool ImportProject::simplifyPathWithVariables(std::string &s, PropertiesMap &pro
     checkUnexpandedExpressions(s, "path");
     if (s.find("$(") != std::string::npos)
         return false;
+    // Property values may contain native separators (\); normalize after expansion.
+    s = Path::fromNativeSeparators(std::move(s));
     s = Path::simplifyPath(std::move(s));
     return true;
 }
@@ -2119,18 +2483,22 @@ bool ImportProject::importVcxproj(const std::string &filename,
     }
     MetadataMap metadata;
 
+    // Normalize separators once; callers typically pass toAbsolute() results
+    // but normalize here as a safety net so all subsequent rfind('/') are correct.
+    const std::string nfilename = Path::simplifyPath(Path::fromNativeSeparators(filename));
+
     properties.emplace("VisualStudioVersion", "17.0");
 
-    properties["ProjectPath"] = filename;
-    const auto projSlash = filename.rfind('/');
-    std::string temp = (projSlash != std::string::npos) ? filename.substr(projSlash + 1) : filename;
+    properties["ProjectPath"] = nfilename;
+    const auto projSlash = nfilename.rfind('/');
+    std::string temp = (projSlash != std::string::npos) ? nfilename.substr(projSlash + 1) : nfilename;
     properties["ProjectFileName"] = temp;
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     properties["ProjectName"] = temp;
     temp.resize(std::min(temp.size(), size_t(16)));
     properties["ShortProjectName"] = temp;
-    properties["ProjectExt"] = Path::getFilenameExtensionInLowerCase(filename);
-    properties["ProjectDir"] = Path::simplifyPath(Path::getPathFromFilename(filename));
+    properties["ProjectExt"] = Path::getFilenameExtensionInLowerCase(nfilename);
+    properties["ProjectDir"] = Path::getPathFromFilename(nfilename);
 
     // importVcxproj called directly
     if (properties.find("SolutionDir") == properties.end()) {
@@ -2144,7 +2512,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
 
-    MSBuildThis::setMSBuildThis(filename, properties);
+    MSBuildThis::setMSBuildThis(nfilename, properties);
 
     std::string projectDir = properties["ProjectDir"];
     std::list<ProjectConfiguration> projectConfigurationList;
