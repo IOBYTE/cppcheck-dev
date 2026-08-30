@@ -454,8 +454,8 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             for (std::size_t i = 1; i < args.size(); ++i) {
                 const std::string &seg = args[i];
                 const bool segAbsolute = !seg.empty() &&
-                    (seg[0] == '/' || seg[0] == '\\' ||
-                     (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':'));
+                                         (seg[0] == '/' || seg[0] == '\\' ||
+                                          (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':'));
                 if (segAbsolute) {
                     result = seg;
                 } else {
