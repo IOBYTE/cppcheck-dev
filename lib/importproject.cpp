@@ -3406,6 +3406,7 @@ bool cppcheck::testing::evaluateVcxprojCondition(const std::string& condition,
     return ConditionParser(condition, properties).parse();
 }
 
+// cppcheck-suppress unusedFunction
 std::string cppcheck::testing::expandMSBuildExpression(const std::string& expr)
 {
     PropertiesMap properties;
