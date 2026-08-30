@@ -1474,7 +1474,6 @@ namespace {
 
             static constexpr const char *ops[] = { "==", "!=", "<=", ">=", "<", ">" };
             for (const char *op : ops) {
-                // cppcheck-suppress useStlAlgorithm
                 if (match(op)) {
                     const std::string rhs = parseValue();
                     if (!mEvaluate) return "False";
