@@ -444,18 +444,76 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 return args[1];
         }
 
+        // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) — join segments (Path.Combine
+        // semantics: an absolute segment resets the accumulated path), normalize \ to /,
+        // and resolve . and .. components.  The result is absolute only when the first
+        // evaluated segment is itself absolute; relative inputs stay relative.
+        if (caseInsensitiveStringCompare(member, "NormalizePath") == 0 && !args.empty()) {
+            // Join: an absolute segment resets the accumulated path (Path.Combine semantics).
+            std::string result = args[0];
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                const std::string &seg = args[i];
+                const bool segAbsolute = !seg.empty() &&
+                    (seg[0] == '/' || seg[0] == '\\' ||
+                     (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':'));
+                if (segAbsolute) {
+                    result = seg;
+                } else {
+                    if (!result.empty() && result.back() != '/' && result.back() != '\\')
+                        result += '/';
+                    result += seg;
+                }
+            }
+            // Unify separators.
+            for (char &c : result) if (c == '\\') c = '/';
+            // Extract drive-letter or leading-slash prefix.
+            std::string prefix;
+            std::size_t pos = 0;
+            if (result.size() >= 2 && std::isalpha(static_cast<unsigned char>(result[0])) && result[1] == ':') {
+                prefix = result.substr(0, 2) + '/';
+                pos = (result.size() > 2 && result[2] == '/') ? 3 : 2;
+            } else if (!result.empty() && result[0] == '/') {
+                prefix = "/";
+                pos = 1;
+            }
+            // Resolve . and .. components.
+            std::vector<std::string> parts;
+            while (pos < result.size()) {
+                const std::size_t slash = result.find('/', pos);
+                const std::string seg = result.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
+                pos = (slash == std::string::npos) ? result.size() : slash + 1;
+                if (seg.empty() || seg == ".")
+                    continue;
+                if (seg == "..") {
+                    if (!parts.empty()) parts.pop_back();
+                } else {
+                    parts.push_back(seg);
+                }
+            }
+            std::string normalized = prefix;
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                if (i > 0) normalized += '/';
+                normalized += parts[i];
+            }
+            return normalized;
+        }
+
+        // $([MSBuild]::NormalizeDirectory(seg1[, seg2, ...])) — same as NormalizePath
+        // but always returns a path with a trailing slash.
+        if (caseInsensitiveStringCompare(member, "NormalizeDirectory") == 0 && !args.empty()) {
+            // Reuse NormalizePath logic via recursive call with renamed member.
+            const std::string normalized = applyMSBuildStaticFunction(className, "NormalizePath", args);
+            if (!normalized.empty() && normalized.back() != '/')
+                return normalized + '/';
+            return normalized;
+        }
+
         if (args.size() == 1) {
             // $([MSBuild]::EnsureTrailingSlash(path))
             if (caseInsensitiveStringCompare(member, "EnsureTrailingSlash") == 0) {
                 std::string s = args[0];
                 if (!s.empty() && s.back() != '/' && s.back() != '\\')
                     s += '/';
-                return s;
-            }
-            // $([MSBuild]::NormalizePath(path))
-            if (caseInsensitiveStringCompare(member, "NormalizePath") == 0) {
-                std::string s = args[0];
-                for (char &c : s) if (c == '\\') c = '/';
                 return s;
             }
             // $([MSBuild]::GetTargetPlatformVersion(version)) — pass through
@@ -1265,14 +1323,12 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     // duplicates in default mode, but --analyze-all-vs-configs skips that step, causing every
     // finding to be reported once per platform pass.  Remove duplicates here so consumers always
     // see each (file, config) pair exactly once.
-    {
-        std::set<std::pair<std::string, std::string>> seen;
-        for (auto it = fileSettings.begin(); it != fileSettings.end();) {
-            if (!seen.emplace(it->filename(), it->cfg).second)
-                it = fileSettings.erase(it);
-            else
-                ++it;
-        }
+    std::set<std::pair<std::string, std::string>> seen;
+    for (auto it = fileSettings.begin(); it != fileSettings.end();) {
+        if (!seen.emplace(it->filename(), it->cfg).second)
+            it = fileSettings.erase(it);
+        else
+            ++it;
     }
 
     return importDirectorySolutionProps(mVariables);
@@ -1307,6 +1363,12 @@ ImportProject::ProjectConfiguration::ProjectConfiguration(const tinyxml2::XMLEle
 
 void ImportProject::checkUnexpandedExpressions(const std::string &text, const char *context)
 {
+    // these are emulated so ignore them
+    if (text == "$(VCTargetsPath)/Microsoft.Cpp.targets" ||
+        text == "$(VCTargetsPath)/Microsoft.Cpp.props" ||
+        text == "$(VCTargetsPath)/Microsoft.Cpp.Default.props")
+        return;
+
     std::string::size_type pos = 0;
     while ((pos = text.find("$(", pos)) != std::string::npos) {
         const std::string::size_type end = text.find(')', pos + 2);
@@ -2098,7 +2160,7 @@ const std::string &ImportProject::importResultStr(ImportProject::ImportResult re
 ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElement *node,
                                                          const std::string &projectDir,
                                                          PropertiesMap &properties,
-                                                         MetadataMap &metadata,
+                                                         const MetadataMap &metadata,
                                                          std::list<ItemGroupClCompile> &compileList) {
     const char *include = node->Attribute("Include");
     if (!include)
@@ -2598,11 +2660,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // The vcxproj may have no ProjectConfigurations of its own so get it from Directory.Build.props
     if (projectConfigurationList.empty()) {
         const std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
-        PropertiesMap props = properties;
-        MetadataMap data;
-        std::unordered_set<std::string> stack;
-        if (!directoryBuildProps.empty())
+        if (!directoryBuildProps.empty()) {
+            PropertiesMap props = properties;
+            MetadataMap data;
+            std::unordered_set<std::string> stack;
             importPropsOrTargets(directoryBuildProps, props, data, projectConfigurationList, stack);
+        }
     }
 
     PropertiesMap originalVariables = properties;

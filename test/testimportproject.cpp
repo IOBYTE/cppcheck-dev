@@ -869,6 +869,18 @@ private:
         // --- $([MSBuild]::...) path helpers ---
         ASSERT_EQUALS("foo/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo'))"));
         ASSERT_EQUALS("foo/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo/'))"));
+        // NormalizePath: join segments, normalise separators, resolve . and ..
+        // Use absolute first segments so results are deterministic (CWD-independent).
+        ASSERT_EQUALS("/a/b/c",    cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('/a', 'b', 'c'))"));
+        ASSERT_EQUALS("/a/b/c",    cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('/a\\b\\c'))"));
+        ASSERT_EQUALS("/a/c",      cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('/a/b/../c'))"));
+        ASSERT_EQUALS("/a/b/c",    cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('/a/b/./c'))"));
+        ASSERT_EQUALS("C:/a/c",    cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('C:\\a\\b\\..\\c'))"));
+        ASSERT_EQUALS("C:/a/b/c",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath('C:\\a', 'b', 'c'))"));
+        // NormalizeDirectory: same as NormalizePath but always has a trailing slash
+        ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('/a', 'b', 'c'))"));
+        ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('/a\\b\\c'))"));
+        ASSERT_EQUALS("C:/a/b/c/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('C:\\a', 'b', 'c'))"));
         // ValueOrDefault: return first arg when non-empty, else second
         ASSERT_EQUALS("x", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('x', 'y'))"));
         ASSERT_EQUALS("y", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('', 'y'))"));

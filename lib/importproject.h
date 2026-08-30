@@ -182,7 +182,7 @@ private:
     ImportResult importCompile(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                PropertiesMap &properties,
-                               MetadataMap &metadata,
+                               const MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList);
     void checkUnexpandedExpressions(const std::string &text, const char *context);
     bool simplifyPathWithVariables(std::string &s, PropertiesMap &properties);
