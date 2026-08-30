@@ -1265,7 +1265,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
                     }
                 }
                 return true;
-                };
+            };
             if (!processFolder(node))
                 return false;
         }
@@ -2643,7 +2643,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
                     addProperty(e, discoverProps);
             } else if (hasName(node, "ImportGroup", discoverProps)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
+                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e && projectConfigurationList.empty(); e = e->NextSiblingElement()) {
                     if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
                         importProject(e, projectDir, discoverProps, discoverMeta, projectConfigurationList, discoverStack);
                 }
