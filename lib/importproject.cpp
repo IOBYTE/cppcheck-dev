@@ -1013,6 +1013,45 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     properties["SolutionName"] = temp;
 }
 
+static std::string findFile(const std::string &startDirectory, const std::string &file)
+{
+    // startDirectory comes from MSBuildThisFileDirectory which is already
+    // normalized to '/' separators by Path::simplifyPath.
+    std::string currentDir = startDirectory;
+    if (currentDir.back() == '/' && currentDir.size() > 1 && currentDir[currentDir.size() - 2] != ':')
+        currentDir.pop_back();
+
+    while (!currentDir.empty()) {
+        std::string targetFile = Path::join(currentDir, file);
+        if (Path::isFile(targetFile))
+            return targetFile;
+        if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
+            break;
+        size_t lastSlash = currentDir.rfind('/');
+        if (lastSlash == std::string::npos)
+            break;
+        currentDir.resize(lastSlash);
+    }
+
+    return "";
+}
+
+bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
+{
+    const std::string directorySolutionProps = findFile(properties["ProjectDir"], "Directory.Solution.props");
+    if (!directorySolutionProps.empty()) {
+        MetadataMap data;
+        std::unordered_set<std::string> stack;
+        std::list<ProjectConfiguration> projectConfigurationList;
+        const ImportResult result = importPropsOrTargets(directorySolutionProps, properties, data, projectConfigurationList, stack);
+        if (result > ImportResult::NotResolvable) {
+            errors.emplace_back("Could not import \"" + directorySolutionProps + "\" - " + importResultStr(result));
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ImportProject::importSln(std::istream &istr, const std::string &filename, const std::vector<std::string> &fileFilters)
 {
     PropertiesMap mVariables;
@@ -1082,7 +1121,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         return false;
     }
 
-    return true;
+    return importDirectorySolutionProps(mVariables);
 }
 
 bool ImportProject::importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters)
@@ -1229,7 +1268,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
         }
     }
 
-    return true;
+    return importDirectorySolutionProps(mVariables);
 }
 
 ImportProject::ProjectConfiguration::ProjectConfiguration(const tinyxml2::XMLElement *cfg) {
@@ -1832,29 +1871,6 @@ namespace {
         return ret;
     }
 
-    std::string findFile(const std::string &startDirectory, const std::string &file)
-    {
-        // startDirectory comes from MSBuildThisFileDirectory which is already
-        // normalized to '/' separators by Path::simplifyPath.
-        std::string currentDir = startDirectory;
-        if (currentDir.back() == '/' && currentDir.size() > 1 && currentDir[currentDir.size() - 2] != ':')
-            currentDir.pop_back();
-
-        while (!currentDir.empty()) {
-            std::string targetFile = Path::join(currentDir, file);
-            if (Path::isFile(targetFile))
-                return targetFile;
-            if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
-                break;
-            size_t lastSlash = currentDir.rfind('/');
-            if (lastSlash == std::string::npos)
-                break;
-            currentDir.resize(lastSlash);
-        }
-
-        return "";
-    }
-
     struct MSBuildThis {
         PropertiesMap &propertiesMap;
         std::string thisFile;
@@ -2342,7 +2358,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             debugs.emplace_back("Could not import  \"" + file + "\" - " + importResultStr(result));
         }
     } else {
-        debugs.emplace_back("Could not import \"" + file + "\" - ");
+        debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
     }
     return ImportResult::Ok;
 }
@@ -2533,6 +2549,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties["MSBuildProjectName"] = properties["ProjectName"];
     properties["MSBuildProjectExtension"] = properties["ProjectExt"];
     properties["MSBuildProjectDirectory"] = properties["ProjectDir"];
+    // remove file seperator on end of path
+    if (!properties["MSBuildProjectDirectory"].empty() &&
+        (properties["MSBuildProjectDirectory"].back() == '/' ||
+         properties["MSBuildProjectDirectory"].back() == '\\')) {
+        properties["MSBuildProjectDirectory"].pop_back();
+    }
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
 
@@ -2638,7 +2660,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
                                 }
                             } else {
-                                debugs.emplace_back("Could not import unknown file type \"" + file + "\"");
+                                debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
                             }
                         }
                     }
