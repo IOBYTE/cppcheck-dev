@@ -2374,8 +2374,13 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         }
 
         if (file.find("Microsoft.Cpp.props") != std::string::npos) {
-            auto it = properties.find("ForceImportBeforeCppProps");
-            if (it != properties.end()) {
+            // If ForceImportBeforeCppProps is already set (e.g. by the vcxproj itself),
+            // honour it now before anything else.
+            const bool hadForceImportBefore = properties.count("ForceImportBeforeCppProps") > 0;
+            std::string forceImportBeforeCppProps;
+            if (hadForceImportBefore) {
+                auto it = properties.find("ForceImportBeforeCppProps");
+                forceImportBeforeCppProps = it->second;
                 ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
                     errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
@@ -2397,6 +2402,22 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                         return result;
                     }
                 }
+
+                // Directory.Build.props may have newly set ForceImportBeforeCppProps
+                // (e.g. PowerToys sets it to Cpp.Build.props which defines ProjectConfigurations).
+                // Real MSBuild auto-imports Directory.Build.props before evaluating
+                // Microsoft.Cpp.props, so ForceImportBeforeCppProps set there must be
+                // honoured here.
+                auto it = properties.find("ForceImportBeforeCppProps");
+                if (it != properties.end()) {
+                    if (it->second != forceImportBeforeCppProps) {
+                        ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
+                        if (result > ImportResult::NotResolvable) {
+                            errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
+                            return result;
+                        }
+                    }
+                }
             } else {
                 ImportResult result = importPropsOrTargets(file, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
@@ -2405,7 +2426,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 }
             }
 
-            it = properties.find("ForceImportAfterCppProps");
+            auto it = properties.find("ForceImportAfterCppProps");
             if (it != properties.end()) {
                 ImportResult result = importPropsOrTargets(it->second, properties, metadata, projectConfigurationList, importStack);
                 if (result > ImportResult::NotResolvable) {
@@ -2657,14 +2678,33 @@ bool ImportProject::importVcxproj(const std::string &filename,
         }
     }
 
-    // The vcxproj may have no ProjectConfigurations of its own so get it from Directory.Build.props
+    // Discovery pass: if no ProjectConfigurations were found inline in the vcxproj, walk
+    // its <Import>/<ImportGroup> nodes through importProject so that every MSBuild import
+    // mechanism (Directory.Build.props, ForceImportBeforeCppProps, etc.) is honoured
+    // generically — no special-casing of individual property names required.
+    // We also process <PropertyGroup> nodes so that properties needed to resolve import
+    // paths are available.  Stop as soon as configurations are found.
+    // Use isolated copies of properties, metadata and importStack so that side-effects
+    // of the discovery imports (extra properties, pre-populated import stack, etc.) do
+    // not bleed into the real per-configuration import pass that follows.
     if (projectConfigurationList.empty()) {
-        const std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
-        if (!directoryBuildProps.empty()) {
-            PropertiesMap props = properties;
-            MetadataMap data;
-            std::unordered_set<std::string> stack;
-            importPropsOrTargets(directoryBuildProps, props, data, projectConfigurationList, stack);
+        PropertiesMap discoverProps = properties;
+        MetadataMap discoverMeta;
+        std::unordered_set<std::string> discoverStack;
+        for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement();
+             node && projectConfigurationList.empty();
+             node = node->NextSiblingElement()) {
+            if (hasName(node, "PropertyGroup", discoverProps)) {
+                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
+                    addProperty(e, discoverProps);
+            } else if (hasName(node, "ImportGroup", discoverProps)) {
+                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
+                    if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
+                        importProject(e, projectDir, discoverProps, discoverMeta, projectConfigurationList, discoverStack);
+                }
+            } else if (hasNameAndAttribute(node, "Import", "Project", discoverProps)) {
+                importProject(node, projectDir, discoverProps, discoverMeta, projectConfigurationList, discoverStack);
+            }
         }
     }
 
