@@ -859,66 +859,63 @@ private:
     }
 
     void testMSBuildStaticFunctions() const {
-        using cppcheck::testing::expandMSBuildExpression;
-        using cppcheck::testing::evaluateVcxprojCondition;
-
         // --- $([MSBuild]::...) arithmetic ---
-        ASSERT_EQUALS("3",  expandMSBuildExpression("$([MSBuild]::Add(1, 2))"));
-        ASSERT_EQUALS("5",  expandMSBuildExpression("$([MSBuild]::Subtract(8, 3))"));
-        ASSERT_EQUALS("12", expandMSBuildExpression("$([MSBuild]::Multiply(3, 4))"));
-        ASSERT_EQUALS("3",  expandMSBuildExpression("$([MSBuild]::Divide(9, 3))"));
-        ASSERT_EQUALS("2",  expandMSBuildExpression("$([MSBuild]::Modulo(5, 3))"));
+        ASSERT_EQUALS("3", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Add(1, 2))"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Subtract(8, 3))"));
+        ASSERT_EQUALS("12", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Multiply(3, 4))"));
+        ASSERT_EQUALS("3", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Divide(9, 3))"));
+        ASSERT_EQUALS("2", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Modulo(5, 3))"));
 
         // --- $([MSBuild]::...) path helpers ---
-        ASSERT_EQUALS("foo/", expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo'))"));
-        ASSERT_EQUALS("foo/", expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo/'))"));
+        ASSERT_EQUALS("foo/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo'))"));
+        ASSERT_EQUALS("foo/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::EnsureTrailingSlash('foo/'))"));
         // ValueOrDefault: return first arg when non-empty, else second
-        ASSERT_EQUALS("x",   expandMSBuildExpression("$([MSBuild]::ValueOrDefault('x', 'y'))"));
-        ASSERT_EQUALS("y",   expandMSBuildExpression("$([MSBuild]::ValueOrDefault('', 'y'))"));
+        ASSERT_EQUALS("x", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('x', 'y'))"));
+        ASSERT_EQUALS("y", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('', 'y'))"));
         // GetCurrentToolsVersion
-        ASSERT_EQUALS("Current", expandMSBuildExpression("$([MSBuild]::GetCurrentToolsVersion())"));
+        ASSERT_EQUALS("Current", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::GetCurrentToolsVersion())"));
 
         // --- $([MSBuild]::...) bitwise ---
-        ASSERT_EQUALS("2",  expandMSBuildExpression("$([MSBuild]::BitwiseAnd(6, 3))"));
-        ASSERT_EQUALS("7",  expandMSBuildExpression("$([MSBuild]::BitwiseOr(5, 3))"));
-        ASSERT_EQUALS("6",  expandMSBuildExpression("$([MSBuild]::BitwiseXor(5, 3))"));
+        ASSERT_EQUALS("2", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::BitwiseAnd(6, 3))"));
+        ASSERT_EQUALS("7", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::BitwiseOr(5, 3))"));
+        ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::BitwiseXor(5, 3))"));
 
         // --- $([MSBuild]::...) Escape / Unescape ---
-        ASSERT_EQUALS("%3B", expandMSBuildExpression("$([MSBuild]::Escape(';'))"));
-        ASSERT_EQUALS(";",   expandMSBuildExpression("$([MSBuild]::Unescape('%3B'))"));
-        ASSERT_EQUALS("%24", expandMSBuildExpression("$([MSBuild]::Escape('$'))"));
-        ASSERT_EQUALS("$",   expandMSBuildExpression("$([MSBuild]::Unescape('%24'))"));
+        ASSERT_EQUALS("%3B", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Escape(';'))"));
+        ASSERT_EQUALS(";", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Unescape('%3B'))"));
+        ASSERT_EQUALS("%24", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Escape('$'))"));
+        ASSERT_EQUALS("$", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Unescape('%24'))"));
 
         // --- $([System.String]::...) ---
-        ASSERT_EQUALS("True",  expandMSBuildExpression("$([System.String]::IsNullOrEmpty(''))"));
-        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.String]::IsNullOrEmpty('x'))"));
-        ASSERT_EQUALS("True",  expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('  '))"));
-        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('x'))"));
-        ASSERT_EQUALS("ab",    expandMSBuildExpression("$([System.String]::Concat('a', 'b'))"));
-        ASSERT_EQUALS("a,b",   expandMSBuildExpression("$([System.String]::Join(',', 'a', 'b'))"));
+        ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.String]::IsNullOrEmpty(''))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.String]::IsNullOrEmpty('x'))"));
+        ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('  '))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('x'))"));
+        ASSERT_EQUALS("ab", cppcheck::testing::expandMSBuildExpression("$([System.String]::Concat('a', 'b'))"));
+        ASSERT_EQUALS("a,b", cppcheck::testing::expandMSBuildExpression("$([System.String]::Join(',', 'a', 'b'))"));
 
         // --- $([System.Math]::...) ---
-        ASSERT_EQUALS("10", expandMSBuildExpression("$([System.Math]::Max(5, 10))"));
-        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Min(5, 10))"));
-        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Abs(-5))"));
-        ASSERT_EQUALS("5",  expandMSBuildExpression("$([System.Math]::Abs(5))"));
-        ASSERT_EQUALS("2",  expandMSBuildExpression("$([System.Math]::Floor(2.9))"));
-        ASSERT_EQUALS("3",  expandMSBuildExpression("$([System.Math]::Ceiling(2.1))"));
+        ASSERT_EQUALS("10", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Max(5, 10))"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Min(5, 10))"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Abs(-5))"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Abs(5))"));
+        ASSERT_EQUALS("2", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Floor(2.9))"));
+        ASSERT_EQUALS("3", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Ceiling(2.1))"));
 
         // --- $([System.IO.Path]::...) ---
-        ASSERT_EQUALS("bar.cpp", expandMSBuildExpression("$([System.IO.Path]::GetFileName('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS("bar", expandMSBuildExpression("$([System.IO.Path]::GetFileNameWithoutExtension('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS("C:/foo", expandMSBuildExpression("$([System.IO.Path]::GetDirectoryName('C:/foo/bar.cpp'))"));
-        ASSERT_EQUALS(".cpp", expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
-        ASSERT_EQUALS("True", expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
-        ASSERT_EQUALS("False", expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
-        ASSERT_EQUALS("a/b", expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
+        ASSERT_EQUALS("bar.cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetFileName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("bar", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetFileNameWithoutExtension('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS("C:/foo", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetDirectoryName('C:/foo/bar.cpp'))"));
+        ASSERT_EQUALS(".cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
+        ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
+        ASSERT_EQUALS("a/b", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
 
         // --- Composite / nesting ---
-        ASSERT_EQUALS("6",  expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));
-        ASSERT(evaluateVcxprojCondition("$([MSBuild]::Add(1, 2)) == '3'", "", ""));
-        ASSERT(evaluateVcxprojCondition("$([System.String]::IsNullOrEmpty('')) == 'True'", "", ""));
-        ASSERT(evaluateVcxprojCondition("$([System.Math]::Max(10, 5)) == '10'", "", ""));
+        ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::Add(1, 2)) == '3'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.String]::IsNullOrEmpty('')) == 'True'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.Math]::Max(10, 5)) == '10'", "", ""));
     }
 
     // TODO: test fsParseCommand()
