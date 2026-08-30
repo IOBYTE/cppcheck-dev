@@ -509,8 +509,15 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 const auto dot = args[0].rfind('.');
                 return dot != std::string::npos ? args[0].substr(dot) : "";
             }
-            if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0)
-                return Path::isAbsolute(args[0]) ? "True" : "False";
+            if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0) {
+                const std::string &p = args[0];
+                const bool rooted = !p.empty() &&
+                                    (p[0] == '/' || p[0] == '\\' ||
+                                     (p.size() >= 2 &&
+                                      std::isalpha(static_cast<unsigned char>(p[0])) &&
+                                      p[1] == ':'));
+                return rooted ? "True" : "False";
+            }
         }
         if (args.size() == 2 && caseInsensitiveStringCompare(member, "Combine") == 0) {
             if (Path::isAbsolute(args[1]))
