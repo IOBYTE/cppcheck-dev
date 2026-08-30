@@ -46,6 +46,7 @@
 
 #include "json.h"
 
+
 std::string ImportProject::collectArgs(const std::string &cmd, std::vector<std::string> &args)
 {
     args.clear();
@@ -2440,7 +2441,9 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
             const char* label = node->Attribute("Label");
             const bool isPropertySheets = (label == nullptr) ||
                                           (std::strcmp(label, "PropertySheets") == 0) ||
-                                          (std::strcmp(label, "Shared") == 0);
+                                          (std::strcmp(label, "Shared") == 0) ||
+                                          (std::strcmp(label, "ExtensionSettings") == 0) ||
+                                          (std::strcmp(label, "ExtensionTargets") == 0);
             if (isPropertySheets) {
                 for (const tinyxml2::XMLElement *importGroup = node->FirstChildElement(); importGroup; importGroup = importGroup->NextSiblingElement()) {
                     if (hasNameAndAttribute(importGroup, "Import", "Project", properties)) {
