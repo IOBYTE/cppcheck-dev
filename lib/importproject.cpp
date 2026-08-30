@@ -465,6 +465,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 }
             }
             // Unify separators.
+            // cppcheck-suppress useStlAlgorithm
             for (char &c : result) if (c == '\\') c = '/';
             // Extract drive-letter or leading-slash prefix.
             std::string prefix;
@@ -591,6 +592,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             return args[0].empty() ? "True" : "False";
         if (caseInsensitiveStringCompare(member, "IsNullOrWhiteSpace") == 0 && args.size() == 1) {
             for (const char c : args[0])
+                // cppcheck-suppress useStlAlgorithm
                 if (!std::isspace(static_cast<unsigned char>(c))) return "False";
             return "True";
         }
@@ -1215,51 +1217,9 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     PropertiesMap solutionVariables;
     setSolution(filename, solutionVariables);
 
-    solutionVariables["VisualStudioVersion"] = "17.0";
-
-    // Pass 1: read <Configurations> to collect solution-level platforms.
-    // Props files may use $(Platform) to generate ProjectConfigurations (PowerToys pattern),
-    // so we must set $(Platform) from the solution before importing those props.
-    // Explicit <BuildConfiguration Name="Debug|x64"/> entries also yield their platform part.
-    std::vector<std::string> solutionPlatforms;
-    for (const tinyxml2::XMLElement* node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
-        if (std::strcmp(node->Name(), "Configurations") != 0)
-            continue;
-        for (const tinyxml2::XMLElement* child = node->FirstChildElement(); child; child = child->NextSiblingElement()) {
-            const char *nameAttr = child->Attribute("Name");
-            if (!nameAttr)
-                continue;
-            if (std::strcmp(child->Name(), "Platform") == 0) {
-                solutionPlatforms.emplace_back(nameAttr);
-            } else if (std::strcmp(child->Name(), "BuildConfiguration") == 0) {
-                // "Debug|x64" — extract the platform part and collect unique platforms
-                const std::string bc(nameAttr);
-                const std::string::size_type sep = bc.find('|');
-                if (sep != std::string::npos) {
-                    std::string plat = bc.substr(sep + 1);
-                    if (std::find(solutionPlatforms.begin(), solutionPlatforms.end(), plat) == solutionPlatforms.end())
-                        solutionPlatforms.emplace_back(std::move(plat));
-                }
-            }
-        }
-    }
+    solutionVariables["VisualStudioVersion"] = "18.0";
 
     bool found = false;
-
-    // Import one project file, optionally pre-seeding $(Platform) from the solution.
-    // Called once per solution platform so that $(Platform)-based config generation expands
-    // correctly; when no solution platform is known, called once with platform unchanged.
-    auto importProjectForPlatform = [&](const std::string &vcxproj, const std::string &platform) -> bool {
-        mVariables = solutionVariables;
-        if (!platform.empty())
-            mVariables["Platform"] = platform;
-        if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
-            errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
-            return false;
-        }
-        found = true;
-        return true;
-    };
 
     auto processProject = [&](const tinyxml2::XMLElement* projectNode) -> bool {
         const char* pathAttribute = projectNode->Attribute("Path");
@@ -1276,14 +1236,15 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
 
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
 
-        if (solutionPlatforms.empty())
-            return importProjectForPlatform(vcxproj, "");
-        return std::all_of(solutionPlatforms.begin(), solutionPlatforms.end(), [&](const std::string &platform) {
-            return importProjectForPlatform(vcxproj, platform);
-        });
+        mVariables = solutionVariables;
+        if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
+            errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
+            return false;
+        }
+        found = true;
+        return true;
     };
 
-    // Pass 2: walk <Project> and <Folder> elements
     for (const tinyxml2::XMLElement* node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
         const char* name = node->Name();
         if (std::strcmp(name, "Project") == 0) {
@@ -1304,7 +1265,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
                     }
                 }
                 return true;
-            };
+                };
             if (!processFolder(node))
                 return false;
         }
@@ -1313,22 +1274,6 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     if (!found) {
         errors.emplace_back("no projects found in Visual Studio solution file");
         return false;
-    }
-
-    // Deduplicate fileSettings by (filename, cfg).
-    // When solutionPlatforms has multiple entries, importVcxproj is called once per platform.
-    // Projects whose configs are hardcoded in props files (e.g. the PowerToys pattern: all four
-    // Debug|x64/Release|x64/Debug|ARM64/Release|ARM64 configs listed explicitly in Cpp.Build.props)
-    // produce identical FileSettings from every platform pass.  selectOneVsConfig() removes the
-    // duplicates in default mode, but --analyze-all-vs-configs skips that step, causing every
-    // finding to be reported once per platform pass.  Remove duplicates here so consumers always
-    // see each (file, config) pair exactly once.
-    std::set<std::pair<std::string, std::string>> seen;
-    for (auto it = fileSettings.begin(); it != fileSettings.end();) {
-        if (!seen.emplace(it->filename(), it->cfg).second)
-            it = fileSettings.erase(it);
-        else
-            ++it;
     }
 
     return importDirectorySolutionProps(mVariables);
