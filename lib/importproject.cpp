@@ -466,6 +466,26 @@ static std::string safeFormat(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
 
+#if defined(__GNUC__)
+    // GNU vsnprintf does not zero-pad %s. Handle the specific
+    // "%0*s" form ourselves.
+    if (std::strcmp(fmt, "-%0*s") == 0) {
+        const int width = va_arg(args, int);
+        const char *value = va_arg(args, const char *);
+
+        const std::string str = value ? value : "";
+        const int padding = width - static_cast<int>(str.size());
+
+        std::string result = "-";
+        if (padding > 0)
+            result.append(static_cast<std::size_t>(padding), '0');
+        result += str;
+
+        va_end(args);
+        return result;
+    }
+#endif
+
     va_list argsCopy;
     va_copy(argsCopy, args);
     const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
