@@ -777,34 +777,44 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                     if (!isInt)
                         return arg;
                     const auto uval = static_cast<unsigned long>(lval);
-                    const char *fmt = (width > 0) ? ((specChar == 'X') ? "%0*lX" : "%0*lx")
-                        : ((specChar == 'X') ? "%lX" : "%lx");
-                    return width > 0 ? safeFormat(fmt, width, uval) : safeFormat(fmt, uval);
+                    if (width > 0) {
+                        return specChar == 'X'
+                            ? safeFormat("%0*lX", width, uval)
+                            : safeFormat("%0*lx", width, uval);
+                    }
+                    return specChar == 'X'
+                        ? safeFormat("%lX", uval)
+                        : safeFormat("%lx", uval);
                 }
 
                 if (specChar == 'F' || specChar == 'f') {
                     if (!isDouble)
                         return arg;
-                    int p = width >= 0 ? width : 2;
-                    const char *fmt = (specChar == 'F') ? "%.*f" : "%.*f"; // System.String treats F and f identically
-                    return safeFormat(fmt, p, dval);
+                    const int p = width >= 0 ? width : 2;
+                    return safeFormat("%.*f", p, dval);
                 }
 
                 if (specChar == 'E' || specChar == 'e') {
                     if (!isDouble)
                         return arg;
-                    int p = width >= 0 ? width : 6;
-                    const char *fmt = (specChar == 'E') ? "%.*E" : "%.*e";
-                    return safeFormat(fmt, p, dval);
+                    const int p = width >= 0 ? width : 6;
+                    return specChar == 'E'
+                        ? safeFormat("%.*E", p, dval)
+                        : safeFormat("%.*e", p, dval);
                 }
 
                 if (specChar == 'G' || specChar == 'g') {
                     if (!isDouble)
                         return arg;
-                    const char *fmt = (specChar == 'G') ? "%.*G" : "%.*g";
-                    return width > 0 ? safeFormat(fmt, width, dval) : safeFormat((specChar == 'G' ? "%G" : "%g"), dval);
+                    if (width > 0) {
+                        return specChar == 'G'
+                            ? safeFormat("%.*G", width, dval)
+                            : safeFormat("%.*g", width, dval);
+                    }
+                    return specChar == 'G'
+                        ? safeFormat("%G", dval)
+                        : safeFormat("%g", dval);
                 }
-
                 return arg;
             };
 
