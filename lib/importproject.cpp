@@ -463,16 +463,16 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #define GCC_FMT(string_idx, first_to_check)
 #endif
 
-template <typename... Args>
-static std::string safeFormat(MSVC_FMT const char *fmt, Args&&... args) GCC_FMT(1, 2);
+template <typename ... Args>
+static std::string safeFormat(MSVC_FMT const char *fmt, Args&& ... args) GCC_FMT(1, 2);
 
-template <typename... Args>
-static std::string safeFormat(const char *fmt, Args&&... args) {
-    const int needed = std::snprintf(nullptr, 0, fmt, args...);
+template <typename ... Args>
+static std::string safeFormat(const char *fmt, Args&& ... args) {
+    const int needed = std::snprintf(nullptr, 0, fmt, args ...);
     if (needed < 0)
         return std::string();
     std::vector<char> buf(static_cast<std::size_t>(needed) + 1);
-    std::snprintf(buf.data(), buf.size(), fmt, args...);
+    std::snprintf(buf.data(), buf.size(), fmt, args ...);
     return std::string(buf.data());
 }
 
