@@ -481,7 +481,7 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
             pos = slash + 1;
         }
         return parts;
-        };
+    };
 
     for (const std::string &bp : basePaths) {
         if (absolutePath == bp || bp.empty()) // Seems to be a file, or path is empty
@@ -509,7 +509,7 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
         // Find the length of the common component prefix.
         std::size_t common = 0;
         while (common < absParts.size() && common < baseParts_.size() &&
-            Path::sameFileName(absParts[common], baseParts_[common]))
+               Path::sameFileName(absParts[common], baseParts_[common]))
             ++common;
 
         if (common == 0)
