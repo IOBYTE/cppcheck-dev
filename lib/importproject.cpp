@@ -445,7 +445,7 @@ static std::string findFile(const std::string &startDirectory, const std::string
 }
 
 template<typename ... Args>
-static std::string safeFormat(const char *fmt, Args&&... args) {
+static std::string safeFormat(const char *fmt, Args... args) {
     const int needed = std::snprintf(nullptr, 0, fmt, args ...);
     if (needed < 0)
         return std::string();
