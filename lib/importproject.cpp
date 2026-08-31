@@ -453,13 +453,11 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #elif defined(__clang__)
 // Clang style
 #define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) \
-        __attribute__((format(printf, string_idx, first_to_check)))
+#define GCC_FMT(string_idx, first_to_check) __attribute__((format(printf, string_idx, first_to_check)))
 #elif defined(__GNUC__)
 // GCC style
 #define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) \
-        __attribute__((format(gnu_printf, string_idx, first_to_check)))
+#define GCC_FMT(string_idx, first_to_check) __attribute__((format(gnu_printf, string_idx, first_to_check)))
 #else
 // Fallback for other compilers
 #define MSVC_FMT
