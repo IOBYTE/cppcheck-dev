@@ -445,7 +445,11 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
-#if defined(__GNUC__)
+#if defined(__clang__)
+// Clang maps gnu_printf rules to regular printf
+#define PRINTF_FORMAT(string_idx, first_to_check) \
+        __attribute__((format(printf, string_idx, first_to_check)))
+#elif defined(__GNUC__)
 // For GCC and Clang (used in GitHub Actions)
 #define ATTRIBUTE_FORMAT(string_idx, first_to_check) __attribute__((format(gnu_printf, string_idx, first_to_check)))
 #define MSVC_FORMAT_STRING
@@ -456,8 +460,7 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #define MSVC_FORMAT_STRING _Printf_format_string_
 #else
 // Fallback for any other compiler
-#define ATTRIBUTE_FORMAT(string_idx, first_to_check)
-#define MSVC_FORMAT_STRING
+#define ATTRIBUTE_FORMAT
 #endif
 
 static std::string safeFormat(const char *fmt, ...) ATTRIBUTE_FORMAT(1, 2);
