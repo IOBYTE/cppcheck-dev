@@ -196,7 +196,7 @@ private:
     std::string applyMSBuildStaticFunction(const std::string &className,
                                            const std::string &member,
                                            const std::vector<std::string> &args);
-    void expandMSBuildVariables(std::string &s, PropertiesMap &properties);
+    void expandMSBuildVariables(std::string &s, const PropertiesMap &properties);
     bool evalCondition(const std::string &condition, const PropertiesMap &properties);
     bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
     bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties);

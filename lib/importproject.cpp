@@ -1232,7 +1232,7 @@ struct ImportProject::PropertyValueExpander {
     }
 };
 
-void ImportProject::expandMSBuildVariables(std::string &s, PropertiesMap &properties)
+void ImportProject::expandMSBuildVariables(std::string &s, const PropertiesMap &properties)
 {
     PropertyValueExpander expander{*this, properties, s};
     s = expander.expand();
