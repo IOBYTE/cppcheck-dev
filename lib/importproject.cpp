@@ -444,9 +444,11 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-format-attribute"
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
 
 template<typename ... Args>
 static std::string safeFormat(const char *fmt, Args... args) {
@@ -458,7 +460,9 @@ static std::string safeFormat(const char *fmt, Args... args) {
     return std::string(buf.data());
 }
 
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 
 static std::string getRelativePath(const std::string &absolutePath, const std::vector<std::string> &basePaths) {
     const std::string normAbs = Path::fromNativeSeparators(absolutePath);
