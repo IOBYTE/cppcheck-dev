@@ -444,28 +444,6 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
-#if defined(_MSC_VER)
-// Visual Studio / MSVC style
-#include <sal.h>
-#define MSVC_FMT _Printf_format_string_
-#define GCC_FMT(string_idx, first_to_check)
-#elif defined(__clang__)
-// Clang style
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) __attribute__((format(printf, string_idx, first_to_check)))
-#elif defined(__GNUC__)
-// GCC style
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) __attribute__((format(gnu_printf, string_idx, first_to_check)))
-#else
-// Fallback for other compilers
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check)
-#endif
-
-template<typename ... Args>
-static std::string safeFormat(MSVC_FMT const char *fmt, Args&&... args) GCC_FMT(1, 2);
-
 template<typename ... Args>
 static std::string safeFormat(const char *fmt, Args&&... args) {
     const int needed = std::snprintf(nullptr, 0, fmt, args ...);
