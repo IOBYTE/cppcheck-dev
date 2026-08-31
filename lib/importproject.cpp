@@ -776,6 +776,21 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 return Path::simplifyPath(combined);
             }
         }
+        if (args.size() > 2) {
+            if (caseInsensitiveStringCompare(member, "Combine") == 0) {
+                std::string result = args[0];
+                for (std::size_t i = 1; i < args.size(); ++i) {
+                    if (Path::isAbsolute(args[i])) {
+                        result = args[i];
+                        continue;
+                    }
+                    if (!result.empty() && result.back() != '/' && result.back() != '\\')
+                        result += '/';
+                    result += args[i];
+                }
+                return result;
+            }
+        }
     }
 
     if (caseInsensitiveStringCompare(className, "System.String") == 0) {

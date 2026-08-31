@@ -966,6 +966,7 @@ private:
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
         ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
         ASSERT_EQUALS("a/b", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
+        ASSERT_EQUALS(Path::fromNativeSeparators(Path::getCurrentPath()) + "/a/b/c/d", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('a', 'b', 'c', 'd')))"));
 
         // --- Composite / nesting ---
         ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));
