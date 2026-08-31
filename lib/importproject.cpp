@@ -445,7 +445,22 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
-static std::string safeFormat(const char *fmt, ...) {
+#if defined(__GNUC__)
+// For GCC and Clang (used in GitHub Actions)
+#define ATTRIBUTE_FORMAT(string_idx, first_to_check) __attribute__((format(gnu_printf, string_idx, first_to_check)))
+#define MSVC_FORMAT_STRING
+#elif defined(_MSC_VER)
+// For Microsoft Visual Studio
+#include <sal.h>
+#define ATTRIBUTE_FORMAT(string_idx, first_to_check)
+#define MSVC_FORMAT_STRING _Printf_format_string_
+#else
+// Fallback for any other compiler
+#define ATTRIBUTE_FORMAT(string_idx, first_to_check)
+#define MSVC_FORMAT_STRING
+#endif
+
+static std::string safeFormat(const char *fmt, ...) ATTRIBUTE_FORMAT(1, 2) {
     va_list args;
     va_start(args, fmt);
 
