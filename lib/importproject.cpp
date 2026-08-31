@@ -539,9 +539,9 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
 // Evaluate a $([ClassName]::Method(args)) static property function.
 // Returns an empty string for unknown or unimplementable functions rather
 // than throwing, so import can continue gracefully.
-static std::string applyMSBuildStaticFunction(const std::string &className,
-                                              const std::string &member,
-                                              const std::vector<std::string> &args) {
+std::string ImportProject::applyMSBuildStaticFunction(const std::string &className,
+                                                      const std::string &member,
+                                                      const std::vector<std::string> &args) {
     const auto toInt = [](const std::string &s, long &out) -> bool {
         if (s.empty()) return false;
         char *end = nullptr;
@@ -742,13 +742,39 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                                       p[1] == ':'));
                 return rooted ? "True" : "False";
             }
+            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
+                if (args.size() != 1)
+                    return "";
+
+                const std::string &path = args[0];
+
+                if (Path::isAbsolute(path))
+                    return Path::simplifyPath(Path::fromNativeSeparators(path));
+
+                return Path::simplifyPath(toAbsolute(path));
+            }
         }
-        if (args.size() == 2 && caseInsensitiveStringCompare(member, "Combine") == 0) {
-            if (Path::isAbsolute(args[1]))
-                return args[1];
-            const std::string sep =
-                (!args[0].empty() && args[0].back() != '/' && args[0].back() != '\\') ? "/" : "";
-            return args[0] + sep + args[1];
+        if (args.size() == 2) {
+            if (caseInsensitiveStringCompare(member, "Combine") == 0) {
+                if (Path::isAbsolute(args[1]))
+                    return args[1];
+                const std::string sep =
+                    (!args[0].empty() && args[0].back() != '/' && args[0].back() != '\\') ? "/" : "";
+                return args[0] + sep + args[1];
+            }
+            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
+                const std::string path = Path::fromNativeSeparators(args[0]);
+                const std::string basePath = Path::fromNativeSeparators(args[1]);
+                if (Path::isAbsolute(path))
+                    return Path::simplifyPath(path);
+                if (!Path::isAbsolute(basePath))
+                    return "";
+                std::string combined = basePath;
+                if (!combined.empty() && combined.back() != '/')
+                    combined += '/';
+                combined += path;
+                return Path::simplifyPath(combined);
+            }
         }
     }
 
@@ -1024,20 +1050,22 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
         return member;  // return the platform name ("Windows", "Linux", "OSX") as a string
 
     // Unknown class or method — return empty so import continues
+    debugs.emplace_back("unknown class " + className + " or member " + member);
     return "";
 }
 
 // Expands $(Name) and $(Name.Method(args)) references in property value strings.
 // Unknown variables are left unexpanded. Use expandPropertyValue() to invoke.
-struct PropertyValueExpander {
+struct ImportProject::PropertyValueExpander {
+    ImportProject &mProject;
     const PropertiesMap &mVars;
     std::string mStr;
     std::size_t mPos{0};
     bool mChanged{false};
     bool mReplaceUnknown{false};  // if true, unknown variables expand to ""
 
-    PropertyValueExpander(const PropertiesMap &vars, std::string str)
-        : mVars(vars), mStr(std::move(str)) {}
+    PropertyValueExpander(ImportProject &project, const PropertiesMap &vars, std::string str)
+        : mProject(project),mVars(vars), mStr(std::move(str)) {}
 
     bool isKnown(const std::string &name) const {
         if (mVars.count(name)) return true;
@@ -1123,7 +1151,7 @@ struct PropertyValueExpander {
             }
             if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip outer ')'
             mChanged = true;
-            return applyMSBuildStaticFunction(className, member, args);
+            return mProject.applyMSBuildStaticFunction(className, member, args);
         }
 
         const std::string name = parseIdentifier();
@@ -1189,9 +1217,9 @@ struct PropertyValueExpander {
     }
 };
 
-static void expandMSBuildVariables(std::string &s, PropertiesMap &properties)
+void ImportProject::expandMSBuildVariables(std::string &s, PropertiesMap &properties)
 {
-    PropertyValueExpander expander{properties, s};
+    PropertyValueExpander expander{*this, properties, s};
     s = expander.expand();
 }
 
@@ -1603,12 +1631,11 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
 }
 
-namespace {
     // see https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions
-    class ConditionParser {
+    class ImportProject::ConditionParser {
     public:
-        ConditionParser(const std::string &condition, const PropertiesMap &properties)
-            : mCondition(condition), mVariables(properties) {}
+        ConditionParser(ImportProject &project, const std::string &condition, const PropertiesMap &properties)
+            : mProject(project), mCondition(condition), mVariables(properties) {}
 
         bool parse() {
             const std::string value = parseOr();
@@ -1629,6 +1656,7 @@ namespace {
         }
 
     private:
+        ImportProject &mProject;
         const std::string &mCondition;
         const PropertiesMap &mVariables;
         std::size_t mPos = 0;
@@ -1878,7 +1906,7 @@ namespace {
                     }
                 }
                 expect(")");  // outer closing paren of $(...)
-                return mEvaluate ? applyMSBuildStaticFunction(className, member, args) : std::string();
+                return mEvaluate ? mProject.applyMSBuildStaticFunction(className, member, args) : std::string();
             }
 
             std::string value = getPropertyValue(parseIdentifier());
@@ -1949,7 +1977,7 @@ namespace {
         std::string expandProperties(const std::string &input) const {
             // Delegate to PropertyValueExpander. In condition context unknown
             // variables must expand to "" (MSBuild semantics for quoted strings).
-            PropertyValueExpander expander{mVariables, input};
+            PropertyValueExpander expander{mProject, mVariables, input};
             expander.mReplaceUnknown = true;
             return expander.expand();
         }
@@ -2070,9 +2098,9 @@ namespace {
         }
     };
 
-    bool evalCondition(const std::string &condition, const PropertiesMap &properties) {
+    bool ImportProject::evalCondition(const std::string &condition, const PropertiesMap &properties) {
         try {
-            return ConditionParser(condition, properties).parse();
+            return ConditionParser(*this, condition, properties).parse();
         } catch (const std::exception &) {
             // malformed or unhandled condition syntax (e.g. property functions,
             // unknown methods, bare .Property access) — treat as false so import continues
@@ -2080,21 +2108,21 @@ namespace {
         }
     }
 
-    bool conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
+    bool ImportProject::conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
         const char *condAttr = node->Attribute("Condition");
         if (!condAttr)
             return true;
         return evalCondition(condAttr, properties);
     }
 
-    bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties) {
+    bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties) {
         const char *name = node->Name();
         if (!name || std::strcmp(nodeName, name) != 0)
             return false;
         return conditionIsTrue(node, properties);
     }
 
-    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
+    bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
         const char *name = node->Name();
         const char *attr = node->Attribute(attrName);
         if (!name || !attr || std::strcmp(nodeName, name) != 0)
@@ -2102,7 +2130,7 @@ namespace {
         return conditionIsTrue(node, properties);
     }
 
-    bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
+    bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
         const char *name = node->Name();
         const char *label = node->Attribute("Label");
         if (!name || !label || std::strcmp(nodeName, name) != 0 || std::strcmp(label, nodeAttr) != 0)
@@ -2110,7 +2138,7 @@ namespace {
         return conditionIsTrue(node, properties);
     }
 
-    bool hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
+    bool ImportProject::hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
         const char *name = node->Name();
         if (!name || std::strcmp(nodeName, name) != 0)
             return false;
@@ -2120,6 +2148,7 @@ namespace {
         return conditionIsTrue(node, properties);
     }
 
+namespace {
     std::list<std::string> toStringList(const std::string &s)
     {
         std::list<std::string> ret;
@@ -3707,20 +3736,23 @@ bool cppcheck::testing::evaluateVcxprojCondition(const std::string& condition,
                                                  const std::string& configuration,
                                                  const std::string& platform)
 {
+    ImportProject project;
     PropertiesMap properties;
     properties["Platform"] = platform;
     properties["Configuration"] = configuration;
     // Use ConditionParser directly so exceptions propagate to the caller;
     // evalCondition swallows them (by design for production use).
-    return ConditionParser(condition, properties).parse();
+    ImportProject::ConditionParser parser(project, condition, properties);
+    return parser.parse();
 }
 
 // cppcheck-suppress unusedFunction
 std::string cppcheck::testing::expandMSBuildExpression(const std::string& expr)
 {
+    ImportProject project;
     PropertiesMap properties;
     std::string s = expr;
-    expandMSBuildVariables(s, properties);
+    project.expandMSBuildVariables(s, properties);
     return s;
 }
 
@@ -3729,10 +3761,11 @@ std::string cppcheck::testing::expandMSBuildProperties(const std::string& expr,
                                                        const std::string& configuration,
                                                        const std::string& platform)
 {
+    ImportProject project;
     PropertiesMap properties;
     properties["Configuration"] = configuration;
     properties["Platform"] = platform;
     std::string s = expr;
-    expandMSBuildVariables(s, properties);
+    project.expandMSBuildVariables(s, properties);
     return s;
 }

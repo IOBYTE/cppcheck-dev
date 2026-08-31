@@ -72,6 +72,9 @@ using MetadataMap = std::map<std::string, std::string, cppcheck::stricmp>;
  */
 class CPPCHECKLIB WARN_UNUSED ImportProject {
 public:
+    friend CPPCHECKLIB bool cppcheck::testing::evaluateVcxprojCondition(const std::string &condition, const std::string &configuration, const std::string &platform);
+    friend CPPCHECKLIB std::string cppcheck::testing::expandMSBuildExpression(const std::string &expr);
+    friend CPPCHECKLIB std::string cppcheck::testing::expandMSBuildProperties(const std::string &expr, const std::string &configuration, const std::string &platform);
 
     enum class Type : std::uint8_t {
         NONE,
@@ -136,6 +139,9 @@ protected:
     void setRelativePaths(const std::string &filename);
 
 private:
+    struct PropertyValueExpander;
+    class ConditionParser;
+
     static void parseArgs(FileSettings &fs, const std::vector<std::string> &args);
 
     bool importBcb6Prj(const std::string &projectFilename);
@@ -187,6 +193,17 @@ private:
                                PropertiesMap &properties,
                                const MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList);
+    std::string applyMSBuildStaticFunction(const std::string &className,
+                                           const std::string &member,
+                                           const std::vector<std::string> &args);
+    void expandMSBuildVariables(std::string &s, PropertiesMap &properties);
+    bool evalCondition(const std::string &condition, const PropertiesMap &properties);
+    bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
+    bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties);
+    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
+    bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
+    bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
+
     void checkUnexpandedExpressions(const std::string &text, const char *context);
     bool simplifyPathWithVariables(std::string &s, PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
