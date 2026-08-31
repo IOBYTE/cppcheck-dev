@@ -863,13 +863,13 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('-')) == '5'", "Debug-Test", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('x')) == '-1'", "Debug-Test", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('e')) == '1'", "Debug-Test", "Win32"));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('e', '3')) == '9'", "Debug-Test", "Win32"));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('e')) == '9'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('e', '3')) == '7'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('e')) == '7'", "Debug-Test", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('x')) == '-1'", "Debug-Test", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('e', '3')) == '1'", "Debug-Test", "Win32"));
         ASSERT_EQUALS("5",  cppcheck::testing::expandMSBuildProperties("$(Configuration.IndexOf('-'))", "Debug-Test", "Win32"));
         ASSERT_EQUALS("-1", cppcheck::testing::expandMSBuildProperties("$(Configuration.IndexOf('x'))", "Debug-Test", "Win32"));
-        ASSERT_EQUALS("9",  cppcheck::testing::expandMSBuildProperties("$(Configuration.LastIndexOf('e'))", "Debug-Test", "Win32"));
+        ASSERT_EQUALS("7",  cppcheck::testing::expandMSBuildProperties("$(Configuration.LastIndexOf('e'))", "Debug-Test", "Win32"));
 
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration) == DEBUG", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(configuration) == 'Debug'", "Debug", "Win32"));

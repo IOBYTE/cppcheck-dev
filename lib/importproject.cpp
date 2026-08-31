@@ -37,6 +37,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdarg.h>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -444,6 +445,28 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
+static std::string safeFormat(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
+    va_end(argsCopy);
+
+    if (needed < 0) {
+        va_end(args);
+        return std::string();
+    }
+
+    std::vector<char> buf(static_cast<std::size_t>(needed) + 1);
+    std::vsnprintf(buf.data(), buf.size(), fmt, args);
+
+    va_end(args);
+
+    return std::string(buf.data());
+}
+
 // Evaluate a $([ClassName]::Method(args)) static property function.
 // Returns an empty string for unknown or unimplementable functions rather
 // than throwing, so import can continue gracefully.
@@ -707,29 +730,6 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 const double dval = std::strtod(arg.c_str(), &dend);
                 const bool isDouble = !arg.empty() && dend != arg.c_str() && *dend == '\0';
 
-                // Helper lambda to safely write to an elastic buffer based on width
-                auto safeFormat = [](int targetWidth, const char *fmt, auto... args) -> std::string {
-                    // Estimate the baseline size. Assume numbers take up to 32 chars baseline + the width padding
-                    int estimatedSize = (targetWidth > 0 ? targetWidth : 0) + 32;
-
-                    if (estimatedSize <= 64) {
-                        char buf[64];
-                        std::snprintf(buf, sizeof(buf), fmt, args...);
-                        return std::string(buf);
-                    } else {
-                        // Allocate a dynamic buffer to prevent truncation
-                        std::vector<char> dynamicBuf(estimatedSize + 1);
-                        int needed = std::snprintf(dynamicBuf.data(), dynamicBuf.size(), fmt, args...);
-
-                        // If our estimation was still too low, resize to the exact amount snprintf requested
-                        if (needed >= static_cast<int>(dynamicBuf.size())) {
-                            dynamicBuf.resize(needed + 1);
-                            std::snprintf(dynamicBuf.data(), dynamicBuf.size(), fmt, args...);
-                        }
-                        return std::string(dynamicBuf.data());
-                    }
-                };
-
                 if (specChar == 'D' || specChar == 'd') {
                     if (!isInt)
                         return arg;
@@ -737,13 +737,13 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                         // Handle negative numbers manually to keep '-' outside the zero padding
                         if (lval == LONG_MIN) {
                             // Prevents -lval overflow bug. LONG_MIN is 20 chars long.
-                            return safeFormat(width + 1, "-%0*s", width, "9223372036854775808");
+                            return safeFormat("-%0*s", width, "9223372036854775808");
                         }
                         if (lval < 0)
-                            return safeFormat(width, "-%0*ld", width, -lval);
-                        return safeFormat(width, "%0*ld", width, lval);
+                            return safeFormat("-%0*ld", width, -lval);
+                        return safeFormat("%0*ld", width, lval);
                     }
-                    return safeFormat(-1, "%ld", lval);
+                    return safeFormat("%ld", lval);
                 }
 
                 if (specChar == 'X' || specChar == 'x') {
@@ -752,7 +752,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                     const auto uval = static_cast<unsigned long>(lval);
                     const char *fmt = (width > 0) ? ((specChar == 'X') ? "%0*lX" : "%0*lx")
                         : ((specChar == 'X') ? "%lX" : "%lx");
-                    return width > 0 ? safeFormat(width, fmt, width, uval) : safeFormat(-1, fmt, uval);
+                    return width > 0 ? safeFormat(fmt, width, uval) : safeFormat(fmt, uval);
                 }
 
                 if (specChar == 'F' || specChar == 'f') {
@@ -760,7 +760,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                         return arg;
                     int p = width >= 0 ? width : 2;
                     const char *fmt = (specChar == 'F') ? "%.*f" : "%.*f"; // System.String treats F and f identically
-                    return safeFormat(p, fmt, p, dval);
+                    return safeFormat(fmt, p, dval);
                 }
 
                 if (specChar == 'E' || specChar == 'e') {
@@ -768,14 +768,14 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                         return arg;
                     int p = width >= 0 ? width : 6;
                     const char *fmt = (specChar == 'E') ? "%.*E" : "%.*e";
-                    return safeFormat(p, fmt, p, dval);
+                    return safeFormat(fmt, p, dval);
                 }
 
                 if (specChar == 'G' || specChar == 'g') {
                     if (!isDouble)
                         return arg;
                     const char *fmt = (specChar == 'G') ? "%.*G" : "%.*g";
-                    return width > 0 ? safeFormat(width, fmt, width, dval) : safeFormat(-1, (specChar == 'G' ? "%G" : "%g"), dval);
+                    return width > 0 ? safeFormat(fmt, width, dval) : safeFormat((specChar == 'G' ? "%G" : "%g"), dval);
                 }
 
                 return arg;
@@ -1654,7 +1654,8 @@ namespace {
             for (const char *op : ops) {
                 if (match(op)) {
                     const std::string rhs = parseValue();
-                    if (!mEvaluate) return "False";
+                    if (!mEvaluate)
+                        return "False";
                     return compare(lhs, op, rhs) ? "True" : "False";
                 }
             }
