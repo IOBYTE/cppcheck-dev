@@ -37,7 +37,6 @@
 #include <map>
 #include <set>
 #include <sstream>
-#include <stdarg.h>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -445,45 +444,17 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
-#if defined(_MSC_VER)
-// Visual Studio / MSVC style
-#include <sal.h>
-#define MSVC_FMT _Printf_format_string_
-#define GCC_FMT(string_idx, first_to_check)
-#elif defined(__clang__)
-// Clang style
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) __attribute__((format(printf, string_idx, first_to_check)))
-#elif defined(__GNUC__)
-// GCC style
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check) __attribute__((format(gnu_printf, string_idx, first_to_check)))
-#else
-// Fallback for other compilers
-#define MSVC_FMT
-#define GCC_FMT(string_idx, first_to_check)
-#endif
+template <typename... Args>
+static std::string safeFormat(const char *fmt, Args&&... args)
+{
+    const int needed = std::snprintf(nullptr, 0, fmt, args...);
 
-static std::string safeFormat(MSVC_FMT const char *fmt, ...) GCC_FMT(1, 2);
-
-static std::string safeFormat(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-
-    va_list argsCopy;
-    va_copy(argsCopy, args);
-    const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
-    va_end(argsCopy);
-
-    if (needed < 0) {
-        va_end(args);
+    if (needed < 0)
         return std::string();
-    }
 
     std::vector<char> buf(static_cast<std::size_t>(needed) + 1);
-    std::vsnprintf(buf.data(), buf.size(), fmt, args);
 
-    va_end(args);
+    std::snprintf(buf.data(), buf.size(), fmt, args...);
 
     return std::string(buf.data());
 }
