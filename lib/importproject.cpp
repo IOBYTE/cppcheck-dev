@@ -385,7 +385,7 @@ static std::string applyPropertyMethod(std::string value,
     }
 
     if (caseInsensitiveStringCompare(method, "IndexOf") == 0) {
-        if (args.size() < 1 || args.size() > 2)
+        if (args.empty() || args.size() > 2)
             throw std::runtime_error("IndexOf requires one or two arguments");
         std::size_t from = 0;
         if (args.size() == 2) {
@@ -402,7 +402,7 @@ static std::string applyPropertyMethod(std::string value,
     }
 
     if (caseInsensitiveStringCompare(method, "LastIndexOf") == 0) {
-        if (args.size() < 1 || args.size() > 2)
+        if (args.empty() || args.size() > 2)
             throw std::runtime_error("LastIndexOf requires one or two arguments");
         std::size_t from = std::string::npos;
         if (args.size() == 2) {
@@ -690,7 +690,7 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                 if (spec.empty())
                     return arg;
                 const char specChar = spec[0];
-                // Parse optional numeric width/precision after the specifier letter.
+
                 int width = -1;
                 if (spec.size() > 1) {
                     char *wend = nullptr;
@@ -698,63 +698,87 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                     if (wend != spec.c_str() + 1 && *wend == '\0' && w >= 0)
                         width = static_cast<int>(w);
                 }
-                // Try parsing arg as integer / double.
+
                 char *iend = nullptr;
                 const long lval = std::strtol(arg.c_str(), &iend, 10);
                 const bool isInt = !arg.empty() && iend != arg.c_str() && *iend == '\0';
+
                 char *dend = nullptr;
                 const double dval = std::strtod(arg.c_str(), &dend);
                 const bool isDouble = !arg.empty() && dend != arg.c_str() && *dend == '\0';
-                char buf[64];
-                if (specChar == 'D' || specChar == 'd') {
-                    if (!isInt) return arg;
-                    if (width > 0) {
-                        // In .NET Dn means at least n digits; the minus sign is outside the padding.
-                        if (lval < 0)
-                            std::snprintf(buf, sizeof(buf), "-%0*ld", width, -lval);
-                        else
-                            std::snprintf(buf, sizeof(buf), "%0*ld", width, lval);
+
+                // Helper lambda to safely write to an elastic buffer based on width
+                auto safeFormat = [](int targetWidth, const char *fmt, auto... args) -> std::string {
+                    // Estimate the baseline size. Assume numbers take up to 32 chars baseline + the width padding
+                    int estimatedSize = (targetWidth > 0 ? targetWidth : 0) + 32;
+
+                    if (estimatedSize <= 64) {
+                        char buf[64];
+                        std::snprintf(buf, sizeof(buf), fmt, args...);
+                        return std::string(buf);
                     } else {
-                        std::snprintf(buf, sizeof(buf), "%ld", lval);
+                        // Allocate a dynamic buffer to prevent truncation
+                        std::vector<char> dynamicBuf(estimatedSize + 1);
+                        int needed = std::snprintf(dynamicBuf.data(), dynamicBuf.size(), fmt, args...);
+
+                        // If our estimation was still too low, resize to the exact amount snprintf requested
+                        if (needed >= static_cast<int>(dynamicBuf.size())) {
+                            dynamicBuf.resize(needed + 1);
+                            std::snprintf(dynamicBuf.data(), dynamicBuf.size(), fmt, args...);
+                        }
+                        return std::string(dynamicBuf.data());
                     }
-                    return buf;
+                };
+
+                if (specChar == 'D' || specChar == 'd') {
+                    if (!isInt)
+                        return arg;
+                    if (width > 0) {
+                        // Handle negative numbers manually to keep '-' outside the zero padding
+                        if (lval == LONG_MIN) {
+                            // Prevents -lval overflow bug. LONG_MIN is 20 chars long.
+                            return safeFormat(width + 1, "-%0*s", width, "9223372036854775808");
+                        }
+                        if (lval < 0)
+                            return safeFormat(width, "-%0*ld", width, -lval);
+                        return safeFormat(width, "%0*ld", width, lval);
+                    }
+                    return safeFormat(-1, "%ld", lval);
                 }
-                if (specChar == 'X') {
-                    if (!isInt) return arg;
+
+                if (specChar == 'X' || specChar == 'x') {
+                    if (!isInt)
+                        return arg;
                     const auto uval = static_cast<unsigned long>(lval);
-                    if (width > 0) std::snprintf(buf, sizeof(buf), "%0*lX", width, uval);
-                    else           std::snprintf(buf, sizeof(buf), "%lX", uval);
-                    return buf;
+                    const char *fmt = (width > 0) ? ((specChar == 'X') ? "%0*lX" : "%0*lx")
+                        : ((specChar == 'X') ? "%lX" : "%lx");
+                    return width > 0 ? safeFormat(width, fmt, width, uval) : safeFormat(-1, fmt, uval);
                 }
-                if (specChar == 'x') {
-                    if (!isInt) return arg;
-                    const auto uval = static_cast<unsigned long>(lval);
-                    if (width > 0) std::snprintf(buf, sizeof(buf), "%0*lx", width, uval);
-                    else           std::snprintf(buf, sizeof(buf), "%lx", uval);
-                    return buf;
-                }
+
                 if (specChar == 'F' || specChar == 'f') {
-                    if (!isDouble) return arg;
-                    std::snprintf(buf, sizeof(buf), "%.*f", width >= 0 ? width : 2, dval);
-                    return buf;
+                    if (!isDouble)
+                        return arg;
+                    int p = width >= 0 ? width : 2;
+                    const char *fmt = (specChar == 'F') ? "%.*f" : "%.*f"; // System.String treats F and f identically
+                    return safeFormat(p, fmt, p, dval);
                 }
-                if (specChar == 'E') {
-                    if (!isDouble) return arg;
-                    std::snprintf(buf, sizeof(buf), "%.*E", width >= 0 ? width : 6, dval);
-                    return buf;
+
+                if (specChar == 'E' || specChar == 'e') {
+                    if (!isDouble)
+                        return arg;
+                    int p = width >= 0 ? width : 6;
+                    const char *fmt = (specChar == 'E') ? "%.*E" : "%.*e";
+                    return safeFormat(p, fmt, p, dval);
                 }
-                if (specChar == 'e') {
-                    if (!isDouble) return arg;
-                    std::snprintf(buf, sizeof(buf), "%.*e", width >= 0 ? width : 6, dval);
-                    return buf;
-                }
+
                 if (specChar == 'G' || specChar == 'g') {
-                    if (!isDouble) return arg;
-                    if (width > 0) std::snprintf(buf, sizeof(buf), "%.*G", width, dval);
-                    else           std::snprintf(buf, sizeof(buf), "%G", dval);
-                    return buf;
+                    if (!isDouble)
+                        return arg;
+                    const char *fmt = (specChar == 'G') ? "%.*G" : "%.*g";
+                    return width > 0 ? safeFormat(width, fmt, width, dval) : safeFormat(-1, (specChar == 'G' ? "%G" : "%g"), dval);
                 }
-                return arg;  // unknown specifier — pass value through unchanged
+
+                return arg;
             };
 
             const std::string &fmt = args[0];
@@ -762,13 +786,16 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             result.reserve(fmt.size());
             for (std::size_t i = 0; i < fmt.size(); ++i) {
                 if (fmt[i] == '{') {
-                    if (i + 1 < fmt.size() && fmt[i + 1] == '{') { result += '{'; ++i; continue; }
+                    if (i + 1 < fmt.size() && fmt[i + 1] == '{') {
+                        result += '{'; ++i;
+                        continue;
+                    }
                     const std::size_t close = fmt.find('}', i + 1);
                     if (close == std::string::npos) { result += '{'; continue; }
                     const std::string inner = fmt.substr(i + 1, close - i - 1);
                     const std::size_t colon = inner.find(':');
                     const std::string indexStr = inner.substr(0, colon == std::string::npos ? inner.size() : colon);
-                    const std::string spec     = colon != std::string::npos ? inner.substr(colon + 1) : "";
+                    const std::string spec = colon != std::string::npos ? inner.substr(colon + 1) : "";
                     char *end = nullptr;
                     const long idx = std::strtol(indexStr.c_str(), &end, 10);
                     if (end != indexStr.c_str() && *end == '\0' && idx >= 0) {
