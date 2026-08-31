@@ -444,6 +444,9 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-format-attribute"
+
 template<typename ... Args>
 static std::string safeFormat(const char *fmt, Args... args) {
     const int needed = std::snprintf(nullptr, 0, fmt, args ...);
@@ -453,6 +456,8 @@ static std::string safeFormat(const char *fmt, Args... args) {
     std::snprintf(buf.data(), buf.size(), fmt, args ...);
     return std::string(buf.data());
 }
+
+#pragma clang diagnostic pop
 
 static std::string getRelativePath(const std::string &absolutePath, const std::vector<std::string> &basePaths) {
     const std::string normAbs = Path::fromNativeSeparators(absolutePath);
