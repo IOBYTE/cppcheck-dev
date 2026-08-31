@@ -460,7 +460,9 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #define MSVC_FORMAT_STRING
 #endif
 
-static std::string safeFormat(const char *fmt, ...) ATTRIBUTE_FORMAT(1, 2) {
+static std::string safeFormat(const char *fmt, ...) ATTRIBUTE_FORMAT(1, 2);
+
+static std::string safeFormat(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
 
