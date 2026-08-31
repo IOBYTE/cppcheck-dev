@@ -464,10 +464,10 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #endif
 
 template<typename ... Args>
-static std::string safeFormat(MSVC_FMT const char *fmt, Args&& ... args) GCC_FMT(1, 2);
+static std::string safeFormat(MSVC_FMT const char *fmt, Args&&... args) GCC_FMT(1, 2);
 
 template<typename ... Args>
-static std::string safeFormat(const char *fmt, Args&& ... args) {
+static std::string safeFormat(const char *fmt, Args&&... args) {
     const int needed = std::snprintf(nullptr, 0, fmt, args ...);
     if (needed < 0)
         return std::string();
