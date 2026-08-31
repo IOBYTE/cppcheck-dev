@@ -1631,522 +1631,522 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
 }
 
-    // see https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions
-    class ImportProject::ConditionParser {
-    public:
-        ConditionParser(ImportProject &project, const std::string &condition, const PropertiesMap &properties)
-            : mProject(project), mCondition(condition), mVariables(properties) {}
+// see https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions
+class ImportProject::ConditionParser {
+public:
+    ConditionParser(ImportProject &project, const std::string &condition, const PropertiesMap &properties)
+        : mProject(project), mCondition(condition), mVariables(properties) {}
 
-        bool parse() {
-            const std::string value = parseOr();
+    bool parse() {
+        const std::string value = parseOr();
 
-            skipWhitespace();
+        skipWhitespace();
 
-            if (mPos != mCondition.size()) {
-                if (mCondition[mPos] == ')')
-                    throw std::runtime_error("unmatched ')' in condition " + mCondition);
+        if (mPos != mCondition.size()) {
+            if (mCondition[mPos] == ')')
+                throw std::runtime_error("unmatched ')' in condition " + mCondition);
 
-                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
-            }
-
-            if (value != "True" && value != "False")
-                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
-
-            return value == "True";
+            throw std::runtime_error("Invalid condition: '" + mCondition + "'");
         }
 
-    private:
-        ImportProject &mProject;
-        const std::string &mCondition;
-        const PropertiesMap &mVariables;
-        std::size_t mPos = 0;
-        bool mEvaluate = true;  // false while parsing a short-circuited operand
+        if (value != "True" && value != "False")
+            throw std::runtime_error("Invalid condition: '" + mCondition + "'");
 
-        void skipWhitespace() {
-            while (mPos < mCondition.size() && std::isspace(static_cast<unsigned char>(mCondition[mPos])))
-                ++mPos;
-        }
+        return value == "True";
+    }
 
-        bool match(const std::string &text) {
-            skipWhitespace();
-            if (mCondition.compare(mPos, text.size(), text) != 0)
-                return false;
-            mPos += text.size();
-            return true;
-        }
+private:
+    ImportProject &mProject;
+    const std::string &mCondition;
+    const PropertiesMap &mVariables;
+    std::size_t mPos = 0;
+    bool mEvaluate = true;  // false while parsing a short-circuited operand
 
-        bool matchWord(const std::string &word) {
-            skipWhitespace();
-            if (mCondition.size() - mPos < word.size())
-                return false;
-            if (caseInsensitiveStringCompare(mCondition.substr(mPos, word.size()), word) != 0)
-                return false;
-
-            const std::size_t end = mPos + word.size();
-            if (end < mCondition.size() &&
-                (std::isalnum(static_cast<unsigned char>(mCondition[end])) || mCondition[end] == '_'))
-                return false;
-
-            mPos = end;
-            return true;
-        }
-
-        void expect(const std::string &text) {
-            if (match(text))
-                return;
-
-            if (text == ")")
-                throw std::runtime_error("'(' without closing ')'!");
-
-            throw std::runtime_error("Expected '" + text + "' in condition '" + mCondition + "'");
-        }
-
-        std::string parseOr() {
-            std::string lhs = parseAnd();
-            while (matchWord("or")) {
-                const bool savedEvaluate = mEvaluate;
-                if (lhs == "True") mEvaluate = false;
-                const std::string rhs = parseAnd();
-                mEvaluate = savedEvaluate;
-                if (lhs != "True")
-                    lhs = (rhs == "True") ? "True" : "False";
-            }
-            return lhs;
-        }
-
-        std::string parseAnd() {
-            std::string lhs = parseUnary();
-            while (matchWord("and")) {
-                const bool savedEvaluate = mEvaluate;
-                if (lhs == "False") mEvaluate = false;
-                const std::string rhs = parseUnary();
-                mEvaluate = savedEvaluate;
-                if (lhs != "False")
-                    lhs = (rhs == "True") ? "True" : "False";
-            }
-            return lhs;
-        }
-
-        std::string parseUnary() {
-            if (match("!") || matchWord("not")) {
-                if (mPos == mCondition.size())
-                    throw std::runtime_error("Invalid condition: '" + mCondition + "'");
-                return parseUnary() == "False" ? "True" : "False";
-            }
-
-            return parsePrimary();
-        }
-
-        std::string parsePrimary() {
-            skipWhitespace();
-
-            if (match("(")) {
-                std::string value = parseOr();
-                expect(")");
-                return value;
-            }
-
-            if (matchWord("Exists"))
-                return parseExists();
-
-            if (matchWord("And") || matchWord("Or"))
-                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
-
-            if (matchWord("HasTrailingSlash"))
-                return parseHasTrailingSlash();
-
-            return parseComparison();
-        }
-
-        std::string parseComparison() {
-            const std::string lhs = parseValue();
-            skipWhitespace();
-
-            static constexpr const char *ops[] = { "==", "!=", "<=", ">=", "<", ">" };
-            for (const char *op : ops) {
-                if (match(op)) {
-                    const std::string rhs = parseValue();
-                    if (!mEvaluate)
-                        return "False";
-                    return compare(lhs, op, rhs) ? "True" : "False";
-                }
-            }
-
-            return lhs;
-        }
-
-        std::string parseValue() {
-            skipWhitespace();
-
-            if (mPos >= mCondition.size())
-                throw std::runtime_error("Missing operator");
-
-            if (matchWord("true"))
-                return "True";
-
-            if (matchWord("false"))
-                return "False";
-
-            if (mCondition[mPos] == '\'')
-                return parseString();
-
-            if (mCondition.compare(mPos, 2, "$(") == 0)
-                return parsePropertyExpression();
-
-            if (std::isdigit(static_cast<unsigned char>(mCondition[mPos])) ||
-                (mCondition[mPos] == '-' &&
-                 mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
-                const std::size_t begin = mPos++;
-
-                while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
-                    ++mPos;
-
-                return mCondition.substr(begin, mPos - begin);
-            }
-
-            const std::size_t begin = mPos;
-            while (mPos < mCondition.size()) {
-                const auto c = static_cast<unsigned char>(mCondition[mPos]);
-                if (!std::isalnum(c) && c != '_' && c != '-' && c != '.')
-                    break;
-                ++mPos;
-            }
-
-            if (mPos != begin)
-                return mCondition.substr(begin, mPos - begin);
-            if (!mEvaluate)
-                return std::string();
-            throw std::runtime_error("Unknown/unhandled operator/operand '" + mCondition.substr(mPos) + "'");
-        }
-
-        std::string parseString() {
+    void skipWhitespace() {
+        while (mPos < mCondition.size() && std::isspace(static_cast<unsigned char>(mCondition[mPos])))
             ++mPos;
-            std::string value;
+    }
 
-            while (mPos < mCondition.size()) {
-                const char c = mCondition[mPos++];
+    bool match(const std::string &text) {
+        skipWhitespace();
+        if (mCondition.compare(mPos, text.size(), text) != 0)
+            return false;
+        mPos += text.size();
+        return true;
+    }
 
-                if (c == '\'')
-                    return expandProperties(value);
+    bool matchWord(const std::string &word) {
+        skipWhitespace();
+        if (mCondition.size() - mPos < word.size())
+            return false;
+        if (caseInsensitiveStringCompare(mCondition.substr(mPos, word.size()), word) != 0)
+            return false;
 
-                value += c;
-            }
+        const std::size_t end = mPos + word.size();
+        if (end < mCondition.size() &&
+            (std::isalnum(static_cast<unsigned char>(mCondition[end])) || mCondition[end] == '_'))
+            return false;
 
-            if (!mEvaluate)
-                return std::string();
-            throw std::runtime_error("Can not tokenize condition");
+        mPos = end;
+        return true;
+    }
+
+    void expect(const std::string &text) {
+        if (match(text))
+            return;
+
+        if (text == ")")
+            throw std::runtime_error("'(' without closing ')'!");
+
+        throw std::runtime_error("Expected '" + text + "' in condition '" + mCondition + "'");
+    }
+
+    std::string parseOr() {
+        std::string lhs = parseAnd();
+        while (matchWord("or")) {
+            const bool savedEvaluate = mEvaluate;
+            if (lhs == "True") mEvaluate = false;
+            const std::string rhs = parseAnd();
+            mEvaluate = savedEvaluate;
+            if (lhs != "True")
+                lhs = (rhs == "True") ? "True" : "False";
+        }
+        return lhs;
+    }
+
+    std::string parseAnd() {
+        std::string lhs = parseUnary();
+        while (matchWord("and")) {
+            const bool savedEvaluate = mEvaluate;
+            if (lhs == "False") mEvaluate = false;
+            const std::string rhs = parseUnary();
+            mEvaluate = savedEvaluate;
+            if (lhs != "False")
+                lhs = (rhs == "True") ? "True" : "False";
+        }
+        return lhs;
+    }
+
+    std::string parseUnary() {
+        if (match("!") || matchWord("not")) {
+            if (mPos == mCondition.size())
+                throw std::runtime_error("Invalid condition: '" + mCondition + "'");
+            return parseUnary() == "False" ? "True" : "False";
         }
 
-        static bool parseInteger(const std::string &s, long &value)
-        {
-            if (s.empty())
-                return false;
+        return parsePrimary();
+    }
 
-            const char *begin = s.c_str();
-            char *end = nullptr;
-            int base = 10;
+    std::string parsePrimary() {
+        skipWhitespace();
 
-            if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-                begin += 2;
-                if (*begin == '\0')
-                    return false;
-                base = 16;
-            }
-
-            value = std::strtol(begin, &end, base);
-            return end != begin && *end == '\0';
-        }
-
-        std::string parseIdentifier() {
-            skipWhitespace();
-            std::string result;
-            while (mPos < mCondition.size()) {
-                if (mCondition.compare(mPos, 2, "$(") == 0) {
-                    result += parsePropertyExpression();
-                    continue;
-                }
-                const auto c = static_cast<unsigned char>(mCondition[mPos]);
-                if (!std::isalnum(c) && c != '_' && c != '-')
-                    break;
-                result += mCondition[mPos++];
-            }
-            if (result.empty())
-                throw std::runtime_error("Expected identifier in condition '" + mCondition + "'");
-            return result;
-        }
-
-        std::string parsePropertyExpression() {
-            expect("$(");
-
-            // $([ClassName]::Method(args)) — static property function
-            if (mPos < mCondition.size() && mCondition[mPos] == '[') {
-                ++mPos;  // skip '['
-                std::string className;
-                while (mPos < mCondition.size() && mCondition[mPos] != ']')
-                    className += mCondition[mPos++];
-                if (mPos < mCondition.size()) ++mPos;  // skip ']'
-                if (mPos + 1 < mCondition.size() && mCondition[mPos] == ':' && mCondition[mPos + 1] == ':')
-                    mPos += 2;  // skip '::'
-                std::string member;
-                while (mPos < mCondition.size()) {
-                    const auto c = static_cast<unsigned char>(mCondition[mPos]);
-                    if (!std::isalnum(c) && c != '_') break;
-                    member += mCondition[mPos++];
-                }
-                std::vector<std::string> args;
-                if (mPos < mCondition.size() && mCondition[mPos] == '(') {
-                    ++mPos;  // skip '('
-                    skipWhitespace();
-                    if (!match(")")) {
-                        do {
-                            args.push_back(parseValue());
-                            skipWhitespace();
-                        } while (match(","));
-                        expect(")");
-                    }
-                }
-                expect(")");  // outer closing paren of $(...)
-                return mEvaluate ? mProject.applyMSBuildStaticFunction(className, member, args) : std::string();
-            }
-
-            std::string value = getPropertyValue(parseIdentifier());
-
-            while (true) {
-                skipWhitespace();
-                if (!match("."))
-                    break;
-
-                const std::string method = parseIdentifier();
-                if (!match("(")) {
-                    // Property access without parentheses (e.g. $(Foo.Length)).
-                    if (mEvaluate && caseInsensitiveStringCompare(method, "Length") == 0)
-                        value = std::to_string(value.size());
-                    break;
-                }
-                std::vector<std::string> args;
-                skipWhitespace();
-                if (!match(")")) {
-                    do {
-                        args.push_back(parseValue());
-                    } while (match(","));
-                    expect(")");
-                }
-                value = mEvaluate ? applyMethod(value, method, args) : std::string();
-            }
-
+        if (match("(")) {
+            std::string value = parseOr();
             expect(")");
             return value;
         }
 
-        std::string parseExists() {
-            expect("(");
-            const std::string filename = parseValue();
-            expect(")");
+        if (matchWord("Exists"))
+            return parseExists();
 
-            std::string path = filename;
-            if (!Path::isAbsolute(path)) {
-                auto it = mVariables.find("MSBuildThisFileDirectory");
-                if (it == mVariables.end())
-                    it = mVariables.find("ProjectDir");
-                if (it != mVariables.end())
-                    path = it->second + path;
+        if (matchWord("And") || matchWord("Or"))
+            throw std::runtime_error("Invalid condition: '" + mCondition + "'");
+
+        if (matchWord("HasTrailingSlash"))
+            return parseHasTrailingSlash();
+
+        return parseComparison();
+    }
+
+    std::string parseComparison() {
+        const std::string lhs = parseValue();
+        skipWhitespace();
+
+        static constexpr const char *ops[] = { "==", "!=", "<=", ">=", "<", ">" };
+        for (const char *op : ops) {
+            if (match(op)) {
+                const std::string rhs = parseValue();
+                if (!mEvaluate)
+                    return "False";
+                return compare(lhs, op, rhs) ? "True" : "False";
             }
-
-            return (Path::isFile(path) || Path::isDirectory(path)) ? "True" : "False";
         }
 
-        std::string parseHasTrailingSlash() {
-            expect("(");
-            const std::string value = parseValue();
-            expect(")");
+        return lhs;
+    }
 
-            return (!value.empty() && (value.back() == '/' || value.back() == '\\'))
-                ? "True"
-                : "False";
+    std::string parseValue() {
+        skipWhitespace();
+
+        if (mPos >= mCondition.size())
+            throw std::runtime_error("Missing operator");
+
+        if (matchWord("true"))
+            return "True";
+
+        if (matchWord("false"))
+            return "False";
+
+        if (mCondition[mPos] == '\'')
+            return parseString();
+
+        if (mCondition.compare(mPos, 2, "$(") == 0)
+            return parsePropertyExpression();
+
+        if (std::isdigit(static_cast<unsigned char>(mCondition[mPos])) ||
+            (mCondition[mPos] == '-' &&
+             mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
+            const std::size_t begin = mPos++;
+
+            while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
+                ++mPos;
+
+            return mCondition.substr(begin, mPos - begin);
         }
 
-        std::string getPropertyValue(const std::string &name) const {
-            const auto it = mVariables.find(name);
+        const std::size_t begin = mPos;
+        while (mPos < mCondition.size()) {
+            const auto c = static_cast<unsigned char>(mCondition[mPos]);
+            if (!std::isalnum(c) && c != '_' && c != '-' && c != '.')
+                break;
+            ++mPos;
+        }
+
+        if (mPos != begin)
+            return mCondition.substr(begin, mPos - begin);
+        if (!mEvaluate)
+            return std::string();
+        throw std::runtime_error("Unknown/unhandled operator/operand '" + mCondition.substr(mPos) + "'");
+    }
+
+    std::string parseString() {
+        ++mPos;
+        std::string value;
+
+        while (mPos < mCondition.size()) {
+            const char c = mCondition[mPos++];
+
+            if (c == '\'')
+                return expandProperties(value);
+
+            value += c;
+        }
+
+        if (!mEvaluate)
+            return std::string();
+        throw std::runtime_error("Can not tokenize condition");
+    }
+
+    static bool parseInteger(const std::string &s, long &value)
+    {
+        if (s.empty())
+            return false;
+
+        const char *begin = s.c_str();
+        char *end = nullptr;
+        int base = 10;
+
+        if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+            begin += 2;
+            if (*begin == '\0')
+                return false;
+            base = 16;
+        }
+
+        value = std::strtol(begin, &end, base);
+        return end != begin && *end == '\0';
+    }
+
+    std::string parseIdentifier() {
+        skipWhitespace();
+        std::string result;
+        while (mPos < mCondition.size()) {
+            if (mCondition.compare(mPos, 2, "$(") == 0) {
+                result += parsePropertyExpression();
+                continue;
+            }
+            const auto c = static_cast<unsigned char>(mCondition[mPos]);
+            if (!std::isalnum(c) && c != '_' && c != '-')
+                break;
+            result += mCondition[mPos++];
+        }
+        if (result.empty())
+            throw std::runtime_error("Expected identifier in condition '" + mCondition + "'");
+        return result;
+    }
+
+    std::string parsePropertyExpression() {
+        expect("$(");
+
+        // $([ClassName]::Method(args)) — static property function
+        if (mPos < mCondition.size() && mCondition[mPos] == '[') {
+            ++mPos;  // skip '['
+            std::string className;
+            while (mPos < mCondition.size() && mCondition[mPos] != ']')
+                className += mCondition[mPos++];
+            if (mPos < mCondition.size()) ++mPos;  // skip ']'
+            if (mPos + 1 < mCondition.size() && mCondition[mPos] == ':' && mCondition[mPos + 1] == ':')
+                mPos += 2;  // skip '::'
+            std::string member;
+            while (mPos < mCondition.size()) {
+                const auto c = static_cast<unsigned char>(mCondition[mPos]);
+                if (!std::isalnum(c) && c != '_') break;
+                member += mCondition[mPos++];
+            }
+            std::vector<std::string> args;
+            if (mPos < mCondition.size() && mCondition[mPos] == '(') {
+                ++mPos;  // skip '('
+                skipWhitespace();
+                if (!match(")")) {
+                    do {
+                        args.push_back(parseValue());
+                        skipWhitespace();
+                    } while (match(","));
+                    expect(")");
+                }
+            }
+            expect(")");  // outer closing paren of $(...)
+            return mEvaluate ? mProject.applyMSBuildStaticFunction(className, member, args) : std::string();
+        }
+
+        std::string value = getPropertyValue(parseIdentifier());
+
+        while (true) {
+            skipWhitespace();
+            if (!match("."))
+                break;
+
+            const std::string method = parseIdentifier();
+            if (!match("(")) {
+                // Property access without parentheses (e.g. $(Foo.Length)).
+                if (mEvaluate && caseInsensitiveStringCompare(method, "Length") == 0)
+                    value = std::to_string(value.size());
+                break;
+            }
+            std::vector<std::string> args;
+            skipWhitespace();
+            if (!match(")")) {
+                do {
+                    args.push_back(parseValue());
+                } while (match(","));
+                expect(")");
+            }
+            value = mEvaluate ? applyMethod(value, method, args) : std::string();
+        }
+
+        expect(")");
+        return value;
+    }
+
+    std::string parseExists() {
+        expect("(");
+        const std::string filename = parseValue();
+        expect(")");
+
+        std::string path = filename;
+        if (!Path::isAbsolute(path)) {
+            auto it = mVariables.find("MSBuildThisFileDirectory");
+            if (it == mVariables.end())
+                it = mVariables.find("ProjectDir");
             if (it != mVariables.end())
-                return it->second;
-
-            const char *envValue = std::getenv(name.c_str());
-            return envValue ? envValue : "";
+                path = it->second + path;
         }
 
-        std::string expandProperties(const std::string &input) const {
-            // Delegate to PropertyValueExpander. In condition context unknown
-            // variables must expand to "" (MSBuild semantics for quoted strings).
-            PropertyValueExpander expander{mProject, mVariables, input};
-            expander.mReplaceUnknown = true;
-            return expander.expand();
+        return (Path::isFile(path) || Path::isDirectory(path)) ? "True" : "False";
+    }
+
+    std::string parseHasTrailingSlash() {
+        expect("(");
+        const std::string value = parseValue();
+        expect(")");
+
+        return (!value.empty() && (value.back() == '/' || value.back() == '\\'))
+            ? "True"
+            : "False";
+    }
+
+    std::string getPropertyValue(const std::string &name) const {
+        const auto it = mVariables.find(name);
+        if (it != mVariables.end())
+            return it->second;
+
+        const char *envValue = std::getenv(name.c_str());
+        return envValue ? envValue : "";
+    }
+
+    std::string expandProperties(const std::string &input) const {
+        // Delegate to PropertyValueExpander. In condition context unknown
+        // variables must expand to "" (MSBuild semantics for quoted strings).
+        PropertyValueExpander expander{mProject, mVariables, input};
+        expander.mReplaceUnknown = true;
+        return expander.expand();
+    }
+
+    static std::string applyMethod(std::string value,
+                                   const std::string &method,
+                                   const std::vector<std::string> &args) {
+        return applyPropertyMethod(std::move(value), method, args);
+    }
+
+    static int compareVersions(const std::vector<int> &lhs,
+                               const std::vector<int> &rhs) {
+        const std::size_t count = std::max(lhs.size(), rhs.size());
+
+        for (std::size_t i = 0; i < count; ++i) {
+            // Missing trailing components are treated as -1 (not 0),
+            // so '17' < '17.0' and '1.2.3' < '1.2.3.0'.
+            const int l = (i < lhs.size()) ? lhs[i] : -1;
+            const int r = (i < rhs.size()) ? rhs[i] : -1;
+            if (l < r)
+                return -1;
+            if (l > r)
+                return 1;
         }
 
-        static std::string applyMethod(std::string value,
-                                       const std::string &method,
-                                       const std::vector<std::string> &args) {
-            return applyPropertyMethod(std::move(value), method, args);
-        }
+        return 0;
+    }
 
-        static int compareVersions(const std::vector<int> &lhs,
-                                   const std::vector<int> &rhs) {
-            const std::size_t count = std::max(lhs.size(), rhs.size());
+    static bool compareVersionResult(int result, const std::string &op) {
+        if (op == "<")
+            return result < 0;
+        if (op == ">")
+            return result > 0;
+        if (op == "<=")
+            return result <= 0;
+        if (op == ">=")
+            return result >= 0;
+        return false;
+    }
 
-            for (std::size_t i = 0; i < count; ++i) {
-                // Missing trailing components are treated as -1 (not 0),
-                // so '17' < '17.0' and '1.2.3' < '1.2.3.0'.
-                const int l = (i < lhs.size()) ? lhs[i] : -1;
-                const int r = (i < rhs.size()) ? rhs[i] : -1;
-                if (l < r)
-                    return -1;
-                if (l > r)
-                    return 1;
-            }
+    static bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
+        const auto parseVersion = [](const std::string &s) -> std::vector<int> {
+            if (s.empty())
+                return {};
 
-            return 0;
-        }
+            std::size_t pos = (s[0] == 'v' || s[0] == 'V') ? 1 : 0;
+            if (pos == s.size())
+                return {};
 
-        static bool compareVersionResult(int result, const std::string &op) {
-            if (op == "<")
-                return result < 0;
-            if (op == ">")
-                return result > 0;
-            if (op == "<=")
-                return result <= 0;
-            if (op == ">=")
-                return result >= 0;
-            return false;
-        }
+            std::vector<int> parts;
+            while (pos < s.size()) {
+                const std::size_t dot = s.find('.', pos);
+                const std::size_t end =
+                    dot == std::string::npos ? s.size() : dot;
 
-        static bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
-            const auto parseVersion = [](const std::string &s) -> std::vector<int> {
-                if (s.empty())
+                if (end == pos)
                     return {};
 
-                std::size_t pos = (s[0] == 'v' || s[0] == 'V') ? 1 : 0;
-                if (pos == s.size())
+                const std::string part = s.substr(pos, end - pos);
+                char *endPtr = nullptr;
+                const long value = std::strtol(part.c_str(), &endPtr, 10);
+
+                if (endPtr != part.c_str() && *endPtr == '\0')
+                    parts.push_back(static_cast<int>(value));
+                else
                     return {};
 
-                std::vector<int> parts;
-                while (pos < s.size()) {
-                    const std::size_t dot = s.find('.', pos);
-                    const std::size_t end =
-                        dot == std::string::npos ? s.size() : dot;
+                if (dot == std::string::npos)
+                    break;
 
-                    if (end == pos)
-                        return {};
-
-                    const std::string part = s.substr(pos, end - pos);
-                    char *endPtr = nullptr;
-                    const long value = std::strtol(part.c_str(), &endPtr, 10);
-
-                    if (endPtr != part.c_str() && *endPtr == '\0')
-                        parts.push_back(static_cast<int>(value));
-                    else
-                        return {};
-
-                    if (dot == std::string::npos)
-                        break;
-
-                    pos = dot + 1;
-                }
-
-                if (parts.empty())
-                    return {};
-
-                return parts;
-            };
-
-            if (op == "==" || op == "!=") {
-                // MSBuild == / != is a plain case-insensitive string comparison.
-                const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
-                return (op == "==") ? strEqual : !strEqual;
+                pos = dot + 1;
             }
 
-            if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
-                const auto rhsVersion = parseVersion(rhs);
-                if (!rhsVersion.empty()) {
-                    const std::vector<int> currentVersion{ 18 };
-                    return compareVersionResult(compareVersions(currentVersion, rhsVersion), op);
-                }
-            }
+            if (parts.empty())
+                return {};
 
-            if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
-                const auto lhsVersion = parseVersion(lhs);
-                if (!lhsVersion.empty()) {
-                    const std::vector<int> currentVersion{ 18 };
-                    return compareVersionResult(compareVersions(lhsVersion, currentVersion), op);
-                }
-            }
+            return parts;
+        };
 
-            long lhsInt = 0;
-            long rhsInt = 0;
-            if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
-                if (op == "<") return lhsInt < rhsInt;
-                if (op == ">") return lhsInt > rhsInt;
-                if (op == "<=") return lhsInt <= rhsInt;
-                if (op == ">=") return lhsInt >= rhsInt;
-            }
-
-            const std::vector<int> lhsVersion = parseVersion(lhs);
-            const std::vector<int> rhsVersion = parseVersion(rhs);
-
-            if (!lhsVersion.empty() && !rhsVersion.empty())
-                return compareVersionResult(compareVersions(lhsVersion, rhsVersion), op);
-
-            throw std::runtime_error("Cannot compare '" + lhs + "' and '" + rhs + "'");
+        if (op == "==" || op == "!=") {
+            // MSBuild == / != is a plain case-insensitive string comparison.
+            const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
+            return (op == "==") ? strEqual : !strEqual;
         }
-    };
 
-    bool ImportProject::evalCondition(const std::string &condition, const PropertiesMap &properties) {
-        try {
-            return ConditionParser(*this, condition, properties).parse();
-        } catch (const std::exception &) {
-            // malformed or unhandled condition syntax (e.g. property functions,
-            // unknown methods, bare .Property access) — treat as false so import continues
-            return false;
+        if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
+            const auto rhsVersion = parseVersion(rhs);
+            if (!rhsVersion.empty()) {
+                const std::vector<int> currentVersion{ 18 };
+                return compareVersionResult(compareVersions(currentVersion, rhsVersion), op);
+            }
         }
-    }
 
-    bool ImportProject::conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
-        const char *condAttr = node->Attribute("Condition");
-        if (!condAttr)
-            return true;
-        return evalCondition(condAttr, properties);
-    }
+        if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
+            const auto lhsVersion = parseVersion(lhs);
+            if (!lhsVersion.empty()) {
+                const std::vector<int> currentVersion{ 18 };
+                return compareVersionResult(compareVersions(lhsVersion, currentVersion), op);
+            }
+        }
 
-    bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties) {
-        const char *name = node->Name();
-        if (!name || std::strcmp(nodeName, name) != 0)
-            return false;
-        return conditionIsTrue(node, properties);
-    }
+        long lhsInt = 0;
+        long rhsInt = 0;
+        if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
+            if (op == "<") return lhsInt < rhsInt;
+            if (op == ">") return lhsInt > rhsInt;
+            if (op == "<=") return lhsInt <= rhsInt;
+            if (op == ">=") return lhsInt >= rhsInt;
+        }
 
-    bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
-        const char *name = node->Name();
-        const char *attr = node->Attribute(attrName);
-        if (!name || !attr || std::strcmp(nodeName, name) != 0)
-            return false;
-        return conditionIsTrue(node, properties);
-    }
+        const std::vector<int> lhsVersion = parseVersion(lhs);
+        const std::vector<int> rhsVersion = parseVersion(rhs);
 
-    bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
-        const char *name = node->Name();
-        const char *label = node->Attribute("Label");
-        if (!name || !label || std::strcmp(nodeName, name) != 0 || std::strcmp(label, nodeAttr) != 0)
-            return false;
-        return conditionIsTrue(node, properties);
-    }
+        if (!lhsVersion.empty() && !rhsVersion.empty())
+            return compareVersionResult(compareVersions(lhsVersion, rhsVersion), op);
 
-    bool ImportProject::hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
-        const char *name = node->Name();
-        if (!name || std::strcmp(nodeName, name) != 0)
-            return false;
-        const char *label = node->Attribute("Label");
-        if (label && std::strcmp(label, nodeAttr) == 0)
-            return false;
-        return conditionIsTrue(node, properties);
+        throw std::runtime_error("Cannot compare '" + lhs + "' and '" + rhs + "'");
     }
+};
+
+bool ImportProject::evalCondition(const std::string &condition, const PropertiesMap &properties) {
+    try {
+        return ConditionParser(*this, condition, properties).parse();
+    } catch (const std::exception &) {
+        // malformed or unhandled condition syntax (e.g. property functions,
+        // unknown methods, bare .Property access) — treat as false so import continues
+        return false;
+    }
+}
+
+bool ImportProject::conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
+    const char *condAttr = node->Attribute("Condition");
+    if (!condAttr)
+        return true;
+    return evalCondition(condAttr, properties);
+}
+
+bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    if (!name || std::strcmp(nodeName, name) != 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
+
+bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    const char *attr = node->Attribute(attrName);
+    if (!name || !attr || std::strcmp(nodeName, name) != 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
+
+bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    const char *label = node->Attribute("Label");
+    if (!name || !label || std::strcmp(nodeName, name) != 0 || std::strcmp(label, nodeAttr) != 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
+
+bool ImportProject::hasNameAndNotLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    if (!name || std::strcmp(nodeName, name) != 0)
+        return false;
+    const char *label = node->Attribute("Label");
+    if (label && std::strcmp(label, nodeAttr) == 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
 
 namespace {
     std::list<std::string> toStringList(const std::string &s)
