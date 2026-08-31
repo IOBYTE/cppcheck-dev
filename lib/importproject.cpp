@@ -446,6 +446,7 @@ static std::string findFile(const std::string &startDirectory, const std::string
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-format-attribute"
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
 
 template<typename ... Args>
 static std::string safeFormat(const char *fmt, Args... args) {
