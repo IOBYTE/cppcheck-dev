@@ -734,17 +734,19 @@ private:
         // Version comparison: more than 4 parts (no truncation)
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.5' > '1.2.3.4.4'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.4' > '1.2.3.4.5'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
-        // Version comparison: missing trailing components treated as 0
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' >= '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
+        // == / != is plain case-insensitive string comparison (no version normalization)
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
+        // >=, <=, >, < use numeric version comparison; missing trailing components are treated as -1
+        // so a shorter version string sorts before a longer one: '17' < '17.0'
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' >= '17.0.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' <= '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' > '17.0.0.0'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' < '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' < '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'16.9' > '17'", "", ""));
@@ -844,6 +846,31 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.Replace('Debug', 'Release')) == 'Release-Test'", "Debug-Test", "Win32"));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("$(Configuration.Replace('debug', 'Release')) == 'Release-Test'", "Debug-Test", "Win32"));
 
+        // Length property access (no parentheses)
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.Length) == '5'", "Debug", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.Length) == '0'", "", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Platform.Length) == '5'", "Debug", "Win32"));
+        // Length after a method call in a chain
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.ToUpper().Length) == '5'", "Debug", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.Replace('-', '').Length) == '9'", "Debug-Test", "Win32"));
+        // Length in PropertyValueExpander (non-condition) path
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildProperties("$(Configuration.Length)", "Debug", "Win32"));
+        ASSERT_EQUALS("0", cppcheck::testing::expandMSBuildProperties("$(Configuration.Length)", "", "Win32"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildProperties("$(Platform.Length)", "Debug", "Win32"));
+        ASSERT_EQUALS("5", cppcheck::testing::expandMSBuildProperties("$(Configuration.ToUpper().Length)", "Debug", "Win32"));
+
+        // IndexOf / LastIndexOf
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('-')) == '5'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('x')) == '-1'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('e')) == '1'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.IndexOf('e', '3')) == '9'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('e')) == '9'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('x')) == '-1'", "Debug-Test", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.LastIndexOf('e', '3')) == '1'", "Debug-Test", "Win32"));
+        ASSERT_EQUALS("5",  cppcheck::testing::expandMSBuildProperties("$(Configuration.IndexOf('-'))", "Debug-Test", "Win32"));
+        ASSERT_EQUALS("-1", cppcheck::testing::expandMSBuildProperties("$(Configuration.IndexOf('x'))", "Debug-Test", "Win32"));
+        ASSERT_EQUALS("9",  cppcheck::testing::expandMSBuildProperties("$(Configuration.LastIndexOf('e'))", "Debug-Test", "Win32"));
+
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration) == DEBUG", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(configuration) == 'Debug'", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' > '0x0F'", "", ""));
@@ -905,6 +932,23 @@ private:
         ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.String]::IsNullOrWhiteSpace('x'))"));
         ASSERT_EQUALS("ab", cppcheck::testing::expandMSBuildExpression("$([System.String]::Concat('a', 'b'))"));
         ASSERT_EQUALS("a,b", cppcheck::testing::expandMSBuildExpression("$([System.String]::Join(',', 'a', 'b'))"));
+        // String.Format: plain substitution
+        ASSERT_EQUALS("foo and bar", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0} and {1}', 'foo', 'bar'))"));
+        // String.Format: escaped braces
+        ASSERT_EQUALS("{literal}", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{{literal}}'))"));
+        // String.Format: D (decimal, optional zero-padding)
+        ASSERT_EQUALS("42",     cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:D}', '42'))"));
+        ASSERT_EQUALS("000042", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:D6}', '42'))"));
+        ASSERT_EQUALS("-000005", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:D6}', '-5'))"));
+        // String.Format: X / x (hexadecimal)
+        ASSERT_EQUALS("FF",   cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:X}', '255'))"));
+        ASSERT_EQUALS("00FF", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:X4}', '255'))"));
+        ASSERT_EQUALS("00ff", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:x4}', '255'))"));
+        // String.Format: F (fixed-point)
+        ASSERT_EQUALS("3.14",   cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:F2}', '3.14159'))"));
+        ASSERT_EQUALS("3.1416", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:F4}', '3.14159'))"));
+        // String.Format: non-numeric arg with a numeric specifier — pass through unchanged
+        ASSERT_EQUALS("abc", cppcheck::testing::expandMSBuildExpression("$([System.String]::Format('{0:D6}', 'abc'))"));
 
         // --- $([System.Math]::...) ---
         ASSERT_EQUALS("10", cppcheck::testing::expandMSBuildExpression("$([System.Math]::Max(5, 10))"));

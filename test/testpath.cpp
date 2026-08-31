@@ -163,6 +163,14 @@ private:
         ASSERT_EQUALS("foo/y.c", Path::getRelativePath("C:/bar/foo/y.c", basePaths));
         ASSERT_EQUALS("C:/test.cpp", Path::getRelativePath("C:/test.cpp", basePaths));
         ASSERT_EQUALS("C:/foobar/test.cpp", Path::getRelativePath("C:/foobar/test.cpp", basePaths));
+        ASSERT_EQUALS("../file.cpp", Path::getRelativePath("C:/a/b/file.cpp", {"C:/a/b/c/"}));
+        ASSERT_EQUALS("../../file.cpp", Path::getRelativePath("C:/a/file.cpp", {"C:/a/b/c/"}));
+        ASSERT_EQUALS("../sibling/file.cpp", Path::getRelativePath("C:/a/b/sibling/file.cpp", {"C:/a/b/c/"}));
+        ASSERT_EQUALS("../file.cpp", Path::getRelativePath("C:\\a\\b\\file.cpp", {"C:\\a\\b\\c\\"}));
+        ASSERT_EQUALS("../file.cpp", Path::getRelativePath("/a/b/file.cpp", {"/a/b/c/"}));
+        ASSERT_EQUALS("../../file.cpp", Path::getRelativePath("/a/file.cpp", {"/a/b/c/"}));
+        ASSERT_EQUALS("../sibling/file.cpp", Path::getRelativePath("/a/b/sibling/file.cpp", {"/a/b/c/"}));
+        ASSERT_EQUALS("C:/x/file.cpp", Path::getRelativePath("C:/x/file.cpp", {"D:/y/"}));
     }
 
     void get_path_from_filename() const {

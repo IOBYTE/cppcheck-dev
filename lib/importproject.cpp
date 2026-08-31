@@ -384,7 +384,64 @@ static std::string applyPropertyMethod(std::string value,
         return value;
     }
 
+    if (caseInsensitiveStringCompare(method, "IndexOf") == 0) {
+        if (args.size() < 1 || args.size() > 2)
+            throw std::runtime_error("IndexOf requires one or two arguments");
+        std::size_t from = 0;
+        if (args.size() == 2) {
+            char *end = nullptr;
+            const long idx = std::strtol(args[1].c_str(), &end, 10);
+            if (end == args[1].c_str() || *end != '\0')
+                throw std::runtime_error("Invalid IndexOf start index");
+            if (idx < 0 || static_cast<unsigned long>(idx) > value.size())
+                throw std::runtime_error("IndexOf start index out of range");
+            from = static_cast<std::size_t>(idx);
+        }
+        const std::size_t found = value.find(args[0], from);
+        return std::to_string(found == std::string::npos ? -1L : static_cast<long>(found));
+    }
+
+    if (caseInsensitiveStringCompare(method, "LastIndexOf") == 0) {
+        if (args.size() < 1 || args.size() > 2)
+            throw std::runtime_error("LastIndexOf requires one or two arguments");
+        std::size_t from = std::string::npos;
+        if (args.size() == 2) {
+            char *end = nullptr;
+            const long idx = std::strtol(args[1].c_str(), &end, 10);
+            if (end == args[1].c_str() || *end != '\0')
+                throw std::runtime_error("Invalid LastIndexOf start index");
+            if (idx < 0 || static_cast<unsigned long>(idx) > value.size())
+                throw std::runtime_error("LastIndexOf start index out of range");
+            from = static_cast<std::size_t>(idx);
+        }
+        const std::size_t found = value.rfind(args[0], from);
+        return std::to_string(found == std::string::npos ? -1L : static_cast<long>(found));
+    }
+
     throw std::runtime_error("Unhandled method '" + method + "'");
+}
+
+static std::string findFile(const std::string &startDirectory, const std::string &file)
+{
+    // startDirectory comes from MSBuildThisFileDirectory which is already
+    // normalized to '/' separators by Path::simplifyPath.
+    std::string currentDir = startDirectory;
+    if (currentDir.back() == '/' && currentDir.size() > 1 && currentDir[currentDir.size() - 2] != ':')
+        currentDir.pop_back();
+
+    while (!currentDir.empty()) {
+        std::string targetFile = Path::join(currentDir, file);
+        if (Path::isFile(targetFile))
+            return targetFile;
+        if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
+            break;
+        size_t lastSlash = currentDir.rfind('/');
+        if (lastSlash == std::string::npos)
+            break;
+        currentDir.resize(lastSlash);
+    }
+
+    return "";
 }
 
 // Evaluate a $([ClassName]::Method(args)) static property function.
@@ -440,9 +497,29 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             // $([MSBuild]::ValueOrDefault(value, default))
             if (caseInsensitiveStringCompare(member, "ValueOrDefault") == 0)
                 return args[0].empty() ? args[1] : args[0];
-            // $([MSBuild]::MakeRelative(base, path)) — approximate: return path unchanged
+            // $([MSBuild]::MakeRelative(basePath, path))
+            // Returns path expressed relative to basePath.  If the two paths
+            // share no common root (e.g. different drive letters) path is
+            // returned unchanged.
             if (caseInsensitiveStringCompare(member, "MakeRelative") == 0)
-                return args[1];
+                return Path::getRelativePath(args[1], {args[0]});
+            // $([MSBuild]::GetDirectoryNameOfFileAbove(startingDirectory, fileName))
+            // Walks up from startingDirectory looking for fileName; returns the
+            // containing directory (no trailing separator) or "" if not found.
+            if (caseInsensitiveStringCompare(member, "GetDirectoryNameOfFileAbove") == 0) {
+                const std::string found = findFile(args[0], args[1]);
+                if (found.empty())
+                    return "";
+                std::string dir = Path::getPathFromFilename(found);
+                if (!dir.empty() && (dir.back() == '/' || dir.back() == '\\'))
+                    dir.pop_back();
+                return dir;
+            }
+            // $([MSBuild]::GetPathOfFileAbove(file, startingDirectory))
+            // Walks up from startingDirectory looking for file; returns the full
+            // path of the file or "" if not found.
+            if (caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0)
+                return findFile(args[1], args[0]);
         }
 
         // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) — join segments (Path.Combine
@@ -521,10 +598,6 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             // $([MSBuild]::GetTargetPlatformVersion(version)) — pass through
             if (caseInsensitiveStringCompare(member, "GetTargetPlatformVersion") == 0)
                 return args[0];
-            // filesystem searches — not feasible during import
-            if (caseInsensitiveStringCompare(member, "GetDirectoryNameOfFileAbove") == 0 ||
-                caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0)
-                return "";
         }
 
         if (args.empty()) {
@@ -610,15 +683,105 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
             }
             return result;
         }
-        // Format — very rough: replace {0},{1},... with positional args
+        // Format: replace {n} and {n:spec} placeholders; {{ and }} are literal braces.
         if (caseInsensitiveStringCompare(member, "Format") == 0 && !args.empty()) {
-            std::string result = args[0];
-            for (std::size_t i = 1; i < args.size(); ++i) {
-                const std::string placeholder = "{" + std::to_string(i - 1) + "}";
-                std::size_t pos = 0;
-                while ((pos = result.find(placeholder, pos)) != std::string::npos) {
-                    result.replace(pos, placeholder.size(), args[i]);
-                    pos += args[i].size();
+            // Apply a .NET composite-format specifier to a string value.
+            const auto applySpec = [](const std::string &arg, const std::string &spec) -> std::string {
+                if (spec.empty())
+                    return arg;
+                const char specChar = spec[0];
+                // Parse optional numeric width/precision after the specifier letter.
+                int width = -1;
+                if (spec.size() > 1) {
+                    char *wend = nullptr;
+                    const long w = std::strtol(spec.c_str() + 1, &wend, 10);
+                    if (wend != spec.c_str() + 1 && *wend == '\0' && w >= 0)
+                        width = static_cast<int>(w);
+                }
+                // Try parsing arg as integer / double.
+                char *iend = nullptr;
+                const long lval = std::strtol(arg.c_str(), &iend, 10);
+                const bool isInt = !arg.empty() && iend != arg.c_str() && *iend == '\0';
+                char *dend = nullptr;
+                const double dval = std::strtod(arg.c_str(), &dend);
+                const bool isDouble = !arg.empty() && dend != arg.c_str() && *dend == '\0';
+                char buf[64];
+                if (specChar == 'D' || specChar == 'd') {
+                    if (!isInt) return arg;
+                    if (width > 0) {
+                        // In .NET Dn means at least n digits; the minus sign is outside the padding.
+                        if (lval < 0)
+                            std::snprintf(buf, sizeof(buf), "-%0*ld", width, -lval);
+                        else
+                            std::snprintf(buf, sizeof(buf), "%0*ld", width, lval);
+                    } else {
+                        std::snprintf(buf, sizeof(buf), "%ld", lval);
+                    }
+                    return buf;
+                }
+                if (specChar == 'X') {
+                    if (!isInt) return arg;
+                    const auto uval = static_cast<unsigned long>(lval);
+                    if (width > 0) std::snprintf(buf, sizeof(buf), "%0*lX", width, uval);
+                    else           std::snprintf(buf, sizeof(buf), "%lX", uval);
+                    return buf;
+                }
+                if (specChar == 'x') {
+                    if (!isInt) return arg;
+                    const auto uval = static_cast<unsigned long>(lval);
+                    if (width > 0) std::snprintf(buf, sizeof(buf), "%0*lx", width, uval);
+                    else           std::snprintf(buf, sizeof(buf), "%lx", uval);
+                    return buf;
+                }
+                if (specChar == 'F' || specChar == 'f') {
+                    if (!isDouble) return arg;
+                    std::snprintf(buf, sizeof(buf), "%.*f", width >= 0 ? width : 2, dval);
+                    return buf;
+                }
+                if (specChar == 'E') {
+                    if (!isDouble) return arg;
+                    std::snprintf(buf, sizeof(buf), "%.*E", width >= 0 ? width : 6, dval);
+                    return buf;
+                }
+                if (specChar == 'e') {
+                    if (!isDouble) return arg;
+                    std::snprintf(buf, sizeof(buf), "%.*e", width >= 0 ? width : 6, dval);
+                    return buf;
+                }
+                if (specChar == 'G' || specChar == 'g') {
+                    if (!isDouble) return arg;
+                    if (width > 0) std::snprintf(buf, sizeof(buf), "%.*G", width, dval);
+                    else           std::snprintf(buf, sizeof(buf), "%G", dval);
+                    return buf;
+                }
+                return arg;  // unknown specifier — pass value through unchanged
+            };
+
+            const std::string &fmt = args[0];
+            std::string result;
+            result.reserve(fmt.size());
+            for (std::size_t i = 0; i < fmt.size(); ++i) {
+                if (fmt[i] == '{') {
+                    if (i + 1 < fmt.size() && fmt[i + 1] == '{') { result += '{'; ++i; continue; }
+                    const std::size_t close = fmt.find('}', i + 1);
+                    if (close == std::string::npos) { result += '{'; continue; }
+                    const std::string inner = fmt.substr(i + 1, close - i - 1);
+                    const std::size_t colon = inner.find(':');
+                    const std::string indexStr = inner.substr(0, colon == std::string::npos ? inner.size() : colon);
+                    const std::string spec     = colon != std::string::npos ? inner.substr(colon + 1) : "";
+                    char *end = nullptr;
+                    const long idx = std::strtol(indexStr.c_str(), &end, 10);
+                    if (end != indexStr.c_str() && *end == '\0' && idx >= 0) {
+                        const std::size_t argIdx = static_cast<std::size_t>(idx) + 1;
+                        result += applySpec(argIdx < args.size() ? args[argIdx] : "", spec);
+                        i = close;
+                    } else {
+                        result += '{';
+                    }
+                } else if (fmt[i] == '}' && i + 1 < fmt.size() && fmt[i + 1] == '}') {
+                    result += '}'; ++i;
+                } else {
+                    result += fmt[i];
                 }
             }
             return result;
@@ -873,7 +1036,12 @@ struct PropertyValueExpander {
                 if (!std::isalnum(c) && c != '_') break;
                 method += mStr[mPos++];
             }
-            if (mPos >= mStr.size() || mStr[mPos] != '(') break;
+            if (mPos >= mStr.size() || mStr[mPos] != '(') {
+                // Property access without parentheses (e.g. $(Foo.Length)).
+                if (caseInsensitiveStringCompare(method, "Length") == 0)
+                    value = std::to_string(value.size());
+                break;
+            }
             ++mPos;  // skip '('
             std::vector<std::string> args;
             while (mPos < mStr.size() && mStr[mPos] != ')') {
@@ -1079,29 +1247,6 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     std::string temp = properties["SolutionFileName"];
     findAndReplace(temp, Path::getFilenameExtension(temp), "");
     properties["SolutionName"] = temp;
-}
-
-static std::string findFile(const std::string &startDirectory, const std::string &file)
-{
-    // startDirectory comes from MSBuildThisFileDirectory which is already
-    // normalized to '/' separators by Path::simplifyPath.
-    std::string currentDir = startDirectory;
-    if (currentDir.back() == '/' && currentDir.size() > 1 && currentDir[currentDir.size() - 2] != ':')
-        currentDir.pop_back();
-
-    while (!currentDir.empty()) {
-        std::string targetFile = Path::join(currentDir, file);
-        if (Path::isFile(targetFile))
-            return targetFile;
-        if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
-            break;
-        size_t lastSlash = currentDir.rfind('/');
-        if (lastSlash == std::string::npos)
-            break;
-        currentDir.resize(lastSlash);
-    }
-
-    return "";
 }
 
 bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
@@ -1444,11 +1589,9 @@ namespace {
         }
 
         std::string parseUnary() {
-            if (match("!")) {
-                skipWhitespace();
+            if (match("!") || matchWord("not")) {
                 if (mPos == mCondition.size())
                     throw std::runtime_error("Invalid condition: '" + mCondition + "'");
-
                 return parseUnary() == "False" ? "True" : "False";
             }
 
@@ -1467,7 +1610,7 @@ namespace {
             if (matchWord("Exists"))
                 return parseExists();
 
-            if (matchWord("And") || matchWord("Or") || match("!"))
+            if (matchWord("And") || matchWord("Or"))
                 throw std::runtime_error("Invalid condition: '" + mCondition + "'");
 
             if (matchWord("HasTrailingSlash"))
@@ -1634,7 +1777,12 @@ namespace {
                     break;
 
                 const std::string method = parseIdentifier();
-                expect("(");
+                if (!match("(")) {
+                    // Property access without parentheses (e.g. $(Foo.Length)).
+                    if (mEvaluate && caseInsensitiveStringCompare(method, "Length") == 0)
+                        value = std::to_string(value.size());
+                    break;
+                }
                 std::vector<std::string> args;
                 skipWhitespace();
                 if (!match(")")) {
@@ -1705,10 +1853,10 @@ namespace {
             const std::size_t count = std::max(lhs.size(), rhs.size());
 
             for (std::size_t i = 0; i < count; ++i) {
-                // Missing trailing components are treated as 0,
-                // so {17} == {17, 0, 0} and {17, 1} > {17, 0, 5} is correct.
-                const int l = (i < lhs.size()) ? lhs[i] : 0;
-                const int r = (i < rhs.size()) ? rhs[i] : 0;
+                // Missing trailing components are treated as -1 (not 0),
+                // so '17' < '17.0' and '1.2.3' < '1.2.3.0'.
+                const int l = (i < lhs.size()) ? lhs[i] : -1;
+                const int r = (i < rhs.size()) ? rhs[i] : -1;
                 if (l < r)
                     return -1;
                 if (l > r)
@@ -1770,16 +1918,8 @@ namespace {
             };
 
             if (op == "==" || op == "!=") {
+                // MSBuild == / != is a plain case-insensitive string comparison.
                 const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
-                if (!strEqual) {
-                    // "17" and "17.0.0.0" represent the same version; try version comparison
-                    const auto lv = parseVersion(lhs);
-                    const auto rv = parseVersion(rhs);
-                    if (!lv.empty() && !rv.empty()) {
-                        const bool verEqual = compareVersions(lv, rv) == 0;
-                        return (op == "==") ? verEqual : !verEqual;
-                    }
-                }
                 return (op == "==") ? strEqual : !strEqual;
             }
 
@@ -3467,6 +3607,19 @@ bool cppcheck::testing::evaluateVcxprojCondition(const std::string& condition,
 std::string cppcheck::testing::expandMSBuildExpression(const std::string& expr)
 {
     PropertiesMap properties;
+    std::string s = expr;
+    expandMSBuildVariables(s, properties);
+    return s;
+}
+
+// cppcheck-suppress unusedFunction
+std::string cppcheck::testing::expandMSBuildProperties(const std::string& expr,
+                                                       const std::string& configuration,
+                                                       const std::string& platform)
+{
+    PropertiesMap properties;
+    properties["Configuration"] = configuration;
+    properties["Platform"] = platform;
     std::string s = expr;
     expandMSBuildVariables(s, properties);
     return s;

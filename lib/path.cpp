@@ -210,17 +210,73 @@ bool Path::isRelative(const std::string& path)
 
 std::string Path::getRelativePath(const std::string& absolutePath, const std::vector<std::string>& basePaths)
 {
+    const std::string normAbs = fromNativeSeparators(absolutePath);
+
+    // Split a forward-slash path into non-empty components, skipping any
+    // leading drive prefix (e.g. "C:") and the following '/'.
+    const auto split = [](const std::string &s) {
+        std::vector<std::string> parts;
+        std::size_t pos = 0;
+        if (s.size() >= 2 && std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':')
+            pos = 2;
+        if (pos < s.size() && s[pos] == '/')
+            ++pos;
+        while (pos < s.size()) {
+            const std::size_t slash = s.find('/', pos);
+            std::string seg = s.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
+            if (!seg.empty())
+                parts.push_back(std::move(seg));
+            if (slash == std::string::npos) break;
+            pos = slash + 1;
+        }
+        return parts;
+    };
+
     for (const std::string &bp : basePaths) {
         if (absolutePath == bp || bp.empty()) // Seems to be a file, or path is empty
             continue;
 
-        if (absolutePath.compare(0, bp.length(), bp) != 0)
-            continue;
+        const std::string normBase = fromNativeSeparators(bp);
 
-        if (endsWith(bp,'/'))
-            return absolutePath.substr(bp.length());
-        if (absolutePath.size() > bp.size() && absolutePath[bp.length()] == '/')
-            return absolutePath.substr(bp.length() + 1);
+        // Fast path: absolutePath is directly under basePath — strip the prefix.
+        if (normAbs.compare(0, normBase.length(), normBase) == 0) {
+            if (endsWith(normBase, '/'))
+                return normAbs.substr(normBase.length());
+            if (normAbs.size() > normBase.size() && normAbs[normBase.size()] == '/')
+                return normAbs.substr(normBase.size() + 1);
+        }
+
+        // Slow path: build a relative path using ".." when absolutePath is above
+        // or beside basePath but shares a common ancestor.
+        std::string base = normBase;
+        if (!base.empty() && base.back() != '/')
+            base += '/';
+
+        const std::vector<std::string> absParts  = split(normAbs);
+        const std::vector<std::string> baseParts_ = split(base);
+
+        // Find the length of the common component prefix.
+        std::size_t common = 0;
+        while (common < absParts.size() && common < baseParts_.size() &&
+               sameFileName(absParts[common], baseParts_[common]))
+            ++common;
+
+        if (common == 0)
+            continue; // truly different roots — skip this basePath
+
+        // One ".." for every extra component in base beyond the common prefix,
+        // then the remaining components of absolutePath.
+        std::string rel;
+        for (std::size_t i = common; i < baseParts_.size(); ++i) {
+            if (!rel.empty()) rel += '/';
+            rel += "..";
+        }
+        for (std::size_t i = common; i < absParts.size(); ++i) {
+            if (!rel.empty()) rel += '/';
+            rel += absParts[i];
+        }
+        if (!rel.empty())
+            return rel;
     }
     return absolutePath;
 }

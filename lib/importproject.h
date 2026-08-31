@@ -58,6 +58,9 @@ namespace cppcheck {
         /** Expand MSBuild property expressions ($(Name), $([Class]::Method(args))) in \p expr
          *  against an empty property map and return the result. Intended for unit tests. */
         CPPCHECKLIB std::string expandMSBuildExpression(const std::string& expr);
+        /** Expand MSBuild property expressions in \p expr with Configuration and Platform
+         *  pre-populated, so instance-method chains like $(Configuration.Length) can be tested. */
+        CPPCHECKLIB std::string expandMSBuildProperties(const std::string& expr, const std::string& configuration, const std::string& platform);
     }
 }
 
