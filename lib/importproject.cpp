@@ -466,26 +466,6 @@ static std::string safeFormat(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
 
-#if defined(__GNUC__)
-    // GNU vsnprintf does not zero-pad %s. Handle the specific
-    // "%0*s" form ourselves.
-    if (std::strcmp(fmt, "-%0*s") == 0) {
-        const int width = va_arg(args, int);
-        const char *value = va_arg(args, const char *);
-
-        const std::string str = value ? value : "";
-        const int padding = width - static_cast<int>(str.size());
-
-        std::string result = "-";
-        if (padding > 0)
-            result.append(static_cast<std::size_t>(padding), '0');
-        result += str;
-
-        va_end(args);
-        return result;
-    }
-#endif
-
     va_list argsCopy;
     va_copy(argsCopy, args);
     const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
@@ -774,7 +754,13 @@ static std::string applyMSBuildStaticFunction(const std::string &className,
                         // Handle negative numbers manually to keep '-' outside the zero padding
                         if (lval == LONG_MIN) {
                             // Prevents -lval overflow bug. LONG_MIN is 20 chars long.
-                            return safeFormat("-%0*s", width, "9223372036854775808");
+                            const std::string magnitude = "9223372036854775808";
+                            const int padding = width - static_cast<int>(magnitude.size());
+
+                            if (padding > 0)
+                                return safeFormat("-%s%s", std::string(padding, '0').c_str(), magnitude.c_str());
+
+                            return safeFormat("-%s", magnitude.c_str());
                         }
                         if (lval < 0)
                             return safeFormat("-%0*ld", width, -lval);
