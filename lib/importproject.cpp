@@ -464,7 +464,9 @@ static std::string findFile(const std::string &startDirectory, const std::string
 #define GCC_FMT(string_idx, first_to_check)
 #endif
 
-static std::string safeFormat(MSVC_FMT const char *fmt, ...) GCC_FMT(1, 2) {
+static std::string safeFormat(MSVC_FMT const char *fmt, ...) GCC_FMT(1, 2);
+
+static std::string safeFormat(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
 
