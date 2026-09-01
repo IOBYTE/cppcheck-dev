@@ -90,15 +90,29 @@ public:
     };
     enum class ImportResult : std::uint8_t {
         Ok,
+        Cycle,         // MSBuild silently ignores circular imports; treat as Ok-level
         NotResolvable,
         NotFound,
         NotValid,
-        Cycle
+    };
+
+    /// Controls which element types are processed during a given evaluation pass.
+    /// MSBuild evaluates in three ordered phases across the full import graph:
+    ///   Phase 1 (Properties) — all PropertyGroups
+    ///   Phase 2 (ItemDefs)   — all ItemDefinitionGroups
+    ///   Phase 3 (Items)      — all ItemGroups (ClCompile)
+    /// Separating the phases ensures each phase sees the fully-resolved output
+    /// of all preceding phases, matching real MSBuild evaluation semantics.
+    enum class EvalPhase : std::uint8_t {
+        Properties, ///< Pass 1: collect/expand PropertyGroup elements only
+        ItemDefs,   ///< Pass 2: collect ItemDefinitionGroup metadata only
+        Items,      ///< Pass 3: collect ClCompile items only
+        Discover,   ///< Like Properties but silences debug/error noise from unresolvable imports
     };
 
 protected:
     static void fsSetDefines(FileSettings& fs, std::string defs);
-    void fsSetIncludePaths(FileSettings& fs, const std::string &basepath, const std::list<std::string> &in, PropertiesMap &properties);
+    void fsSetIncludePaths(FileSettings& fs, const std::string &basepath, const std::list<std::string> &in, const PropertiesMap &properties);
 
 public:
     std::list<FileSettings> fileSettings;
@@ -176,20 +190,23 @@ private:
                                       MetadataMap &metadata,
                                       std::list<ItemGroupClCompile> &compileList,
                                       std::list<ProjectConfiguration> &projectConfigurationList,
-                                      std::unordered_set<std::string> &importStack);
+                                      std::unordered_set<std::string> &importStack,
+                                      EvalPhase phase = EvalPhase::Properties);
     ImportResult importVcxitems(const std::string &items,
                                 PropertiesMap &properties,
                                 MetadataMap &metadata,
                                 std::list<ItemGroupClCompile> &compileList,
                                 std::list<ProjectConfiguration> &projectConfigurationList,
-                                std::unordered_set<std::string> &importStack);
+                                std::unordered_set<std::string> &importStack,
+                                EvalPhase phase = EvalPhase::Properties);
     ImportResult importProject(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                PropertiesMap &properties,
                                MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList,
                                std::list<ProjectConfiguration> &projectConfigurationList,
-                               std::unordered_set<std::string> &importStack);
+                               std::unordered_set<std::string> &importStack,
+                               EvalPhase phase = EvalPhase::Properties);
     ImportResult importCompile(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                PropertiesMap &properties,
@@ -211,7 +228,7 @@ private:
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
     void addMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, MetadataMap &metadata);
     std::string getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original);
-    std::string toAbsolute(const std::string &filename, const std::string &baseDir, PropertiesMap &properties);
+    std::string toAbsolute(const std::string &filename, const std::string &baseDir, const PropertiesMap &properties);
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);
 
