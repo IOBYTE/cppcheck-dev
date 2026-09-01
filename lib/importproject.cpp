@@ -2260,7 +2260,7 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
     return Path::simplifyPath(baseDir + resolved);
 }
 
-bool ImportProject::simplifyPathWithVariables(std::string &s, PropertiesMap &properties)
+bool ImportProject::simplifyPathWithVariables(std::string &s, const PropertiesMap &properties)
 {
     // Normalize native separators before expansion so the expander sees clean
     // paths and debug messages report '/' not '\\'.
@@ -2327,7 +2327,7 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     checkUnexpandedExpressions(text, eName);
 }
 
-void ImportProject::addMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, MetadataMap &metadata) {
+void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, MetadataMap &metadata) {
     const char *eName = node->Name();
     if (!eName || !conditionIsTrue(node, properties))
         return;
@@ -2352,7 +2352,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, PropertiesMap 
     checkUnexpandedExpressions(text, eName);
 }
 
-std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, const MetadataMap &metadata, const std::string &original) {
+std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original) {
     const char *eName = node->Name();
     const char *eText = node->GetText();
     if (!eName || !eText || !conditionIsTrue(node, properties))

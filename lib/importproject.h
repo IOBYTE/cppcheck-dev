@@ -205,10 +205,10 @@ private:
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
 
     void checkUnexpandedExpressions(const std::string &text, const char *context);
-    bool simplifyPathWithVariables(std::string &s, PropertiesMap &properties);
+    bool simplifyPathWithVariables(std::string &s, const PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
-    void addMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, MetadataMap &metadata);
-    std::string getMetadata(const tinyxml2::XMLElement *node, PropertiesMap &properties, const MetadataMap &metadata, const std::string &original);
+    void addMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, MetadataMap &metadata);
+    std::string getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original);
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, PropertiesMap &properties);
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);
