@@ -2951,7 +2951,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                     return result;
                 }
             }
-            
+
             if (file.find("$(") != std::string::npos) {
                 if (phase == EvalPhase::Properties) {
                     // VCTargetsPath unresolved — provide output-dir defaults that Cpp.props defines,
@@ -3240,7 +3240,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     }
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
-    
+
     // MSBuildProjectDirectoryNoRoot: like MSBuildThisFileDirectoryNoRoot but for the
     // project itself.  ProjectDir has a trailing '/' which we strip to match the
     // MSBuildProjectDirectory (no trailing separator) convention.
@@ -3248,7 +3248,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     if (!noRoot.empty() && noRoot.back() == '/')
         noRoot.pop_back();
     properties["MSBuildProjectDirectoryNoRoot"] = noRoot;
-    
+
     MSBuildThis::setMSBuildThis(nfilename, properties);
 
     std::string projectDir = properties["ProjectDir"];
