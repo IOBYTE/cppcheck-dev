@@ -174,6 +174,7 @@ private:
     ImportResult importPropsOrTargets(const std::string &file,
                                       PropertiesMap &properties,
                                       MetadataMap &metadata,
+                                      std::list<ItemGroupClCompile> &compileList,
                                       std::list<ProjectConfiguration> &projectConfigurationList,
                                       std::unordered_set<std::string> &importStack);
     ImportResult importVcxitems(const std::string &items,
@@ -186,6 +187,7 @@ private:
                                const std::string &projectDir,
                                PropertiesMap &properties,
                                MetadataMap &metadata,
+                               std::list<ItemGroupClCompile> &compileList,
                                std::list<ProjectConfiguration> &projectConfigurationList,
                                std::unordered_set<std::string> &importStack);
     ImportResult importCompile(const tinyxml2::XMLElement *node,

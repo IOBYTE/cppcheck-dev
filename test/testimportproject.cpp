@@ -942,6 +942,14 @@ private:
         // The critical real-world pattern: NormalizeDirectory with an inner
         // property and '..' segments — must NOT collapse to empty.
         ASSERT_EQUALS("Debug/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory('$(Configuration)', 'sub', '..'))", "Debug", "Win32"));
+        // Unquoted $(Var)trailing/text arg: trailing bare-word text must be
+        // concatenated onto the expanded value so that e.g.
+        //   $(MSBuildThisFileDirectory)\..\tools  →  one concatenated arg, not two.
+        // Use $(Configuration) as a stand-in for a real directory property.
+        ASSERT_EQUALS("sub/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory($(Configuration)\\..\\sub))", "Debug", "Win32"));
+        ASSERT_EQUALS("sub", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizePath($(Configuration)\\..\\sub))", "Debug", "Win32"));
+        // Multi-arg quoted form with three inner $(…) args
+        ASSERT_EQUALS("Debug/Win32/sub/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory('$(Configuration)', '$(Platform)', 'sub'))", "Debug", "Win32"));
         // Version comparison functions (missing trailing components treated as 0)
         ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('2.0', '1.9'))"));
         ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('1.9', '2.0'))"));
