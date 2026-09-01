@@ -928,6 +928,42 @@ private:
         ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('/a', 'b', 'c'))"));
         ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('/a\\b\\c'))"));
         ASSERT_EQUALS("C:/a/b/c/", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory('C:\\a', 'b', 'c'))"));
+        // Regression: space between method name and '(' must not drop the arg list.
+        // Before the fix this produced "" and a "unknown class MSBuild or member
+        // NormalizeDirectory" debug entry because the arg parser never saw '('.
+        ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory ('/a', 'b', 'c'))"));
+        ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath ('/a', 'b', 'c'))"));
+        // $(…) references inside quoted args must be expanded before the function
+        // runs, so that '..' resolution operates on real path components.
+        // expandMSBuildProperties pre-populates Configuration and Platform; use
+        // them here as stand-ins for real path properties.
+        ASSERT_EQUALS("Debug/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory('$(Configuration)'))", "Debug", "Win32"));
+        ASSERT_EQUALS("Win32/sub/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory('$(Platform)', 'sub'))", "Debug", "Win32"));
+        // The critical real-world pattern: NormalizeDirectory with an inner
+        // property and '..' segments — must NOT collapse to empty.
+        ASSERT_EQUALS("Debug/", cppcheck::testing::expandMSBuildProperties("$([MSBuild]::NormalizeDirectory('$(Configuration)', 'sub', '..'))", "Debug", "Win32"));
+        // Version comparison functions (missing trailing components treated as 0)
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('2.0', '1.9'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('1.9', '2.0'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('1.0', '1.0'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThanOrEquals('1.0', '1.0'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThanOrEquals('2.0', '1.0'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThanOrEquals('1.0', '2.0'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionLessThan('1.9', '2.0'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionLessThan('2.0', '1.9'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionLessThanOrEquals('1.0', '1.0'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionEquals('1.0', '1.0.0'))"));   // missing component = 0
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionEquals('1.2.3', '1.2.3'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionEquals('1.0', '1.1'))"));
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionNotEquals('1.0', '1.1'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionNotEquals('1.0', '1.0.0'))"));
+        // multi-component: 1.2.3.4 vs 1.2.3.5
+        ASSERT_EQUALS("True",  cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionLessThan('1.2.3.4', '1.2.3.5'))"));
+        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionGreaterThan('1.2.3.4', '1.2.3.5'))"));
+        // usable in a condition
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::VersionGreaterThan('17.0', '16.9')) == 'True'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::VersionEquals('14.0', '14.0.0')) == 'True'", "", ""));
+
         // ValueOrDefault: return first arg when non-empty, else second
         ASSERT_EQUALS("x", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('x', 'y'))"));
         ASSERT_EQUALS("y", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::ValueOrDefault('', 'y'))"));
@@ -993,6 +1029,15 @@ private:
         ASSERT_EQUALS("/abs/b", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', '/abs', 'b'))"));
         ASSERT_EQUALS("/abs", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b', '/abs'))"));
         ASSERT_EQUALS(Path::fromNativeSeparators(Path::getCurrentPath()) + "/a/b/c/d", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('a', 'b', 'c', 'd')))"));
+
+        // --- $([System.IO.FileInfo]::new(...)) / $([System.IO.DirectoryInfo]::new(...)) ---
+        // ::new returns the normalized path; chains resolve on that string.
+        ASSERT_EQUALS("C:/foo/bar.cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.FileInfo]::new('C:/foo/bar.cpp').FullName)"));
+        ASSERT_EQUALS("C:/foo/", cppcheck::testing::expandMSBuildExpression("$([System.IO.FileInfo]::new('C:/foo/bar.cpp').DirectoryName)"));
+        ASSERT_EQUALS("bar.cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.FileInfo]::new('C:/foo/bar.cpp').Name)"));
+        ASSERT_EQUALS("C:/foo", cppcheck::testing::expandMSBuildExpression("$([System.IO.DirectoryInfo]::new('C:/foo').FullName)"));
+        // .Method(args) chain after ::new — e.g. replace in the resolved path
+        ASSERT_EQUALS("C:/foo/baz.cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.FileInfo]::new('C:/foo/bar.cpp').FullName.Replace('bar', 'baz'))"));
 
         // --- Composite / nesting ---
         ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::Add($([MSBuild]::Multiply(2, 2)), 2))"));

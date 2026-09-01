@@ -708,6 +708,62 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 return args[0];
         }
 
+        // $([MSBuild]::VersionGreaterThan / VersionGreaterThanOrEquals /
+        //           VersionLessThan    / VersionLessThanOrEquals    /
+        //           VersionEquals      / VersionNotEquals(v1, v2))
+        // Component-by-component numeric comparison; missing trailing components
+        // are treated as 0 (so '1.0' == '1.0.0'), which differs from the
+        // condition-expression < / > operators that use -1 for missing parts.
+        if (args.size() == 2 &&
+            (caseInsensitiveStringCompare(member, "VersionGreaterThan") == 0 ||
+             caseInsensitiveStringCompare(member, "VersionGreaterThanOrEquals") == 0 ||
+             caseInsensitiveStringCompare(member, "VersionLessThan") == 0 ||
+             caseInsensitiveStringCompare(member, "VersionLessThanOrEquals") == 0 ||
+             caseInsensitiveStringCompare(member, "VersionEquals") == 0 ||
+             caseInsensitiveStringCompare(member, "VersionNotEquals") == 0)) {
+            const auto parseVer = [](const std::string &s) -> std::vector<int> {
+                std::vector<int> parts;
+                std::size_t pos = 0;
+                while (pos <= s.size()) {
+                    char *end = nullptr;
+                    const long v = std::strtol(s.c_str() + pos, &end, 10);
+                    if (end == s.c_str() + pos)
+                        break;
+                    parts.push_back(static_cast<int>(v));
+                    pos = static_cast<std::size_t>(end - s.c_str());
+                    if (pos < s.size() && s[pos] == '.')
+                        ++pos;
+                    else
+                        break;
+                }
+                return parts;
+            };
+            const std::vector<int> lv = parseVer(args[0]);
+            const std::vector<int> rv = parseVer(args[1]);
+            const std::size_t count = std::max(lv.size(), rv.size());
+            int cmp = 0;
+            for (std::size_t i = 0; i < count && cmp == 0; ++i) {
+                const int l = (i < lv.size()) ? lv[i] : 0;
+                const int r = (i < rv.size()) ? rv[i] : 0;
+                if (l < r) cmp = -1;
+                else if (l > r) cmp = 1;
+            }
+            bool result = false;
+            if (caseInsensitiveStringCompare(member, "VersionGreaterThan") == 0)
+                result = cmp > 0;
+            else if (caseInsensitiveStringCompare(member, "VersionGreaterThanOrEquals") == 0)
+                result = cmp >= 0;
+            else if (caseInsensitiveStringCompare(member, "VersionLessThan") == 0)
+                result = cmp < 0;
+            else if (caseInsensitiveStringCompare(member, "VersionLessThanOrEquals") == 0)
+                result = cmp <= 0;
+            else if (caseInsensitiveStringCompare(member, "VersionEquals") == 0)
+                result = cmp == 0;
+            else // VersionNotEquals
+                result = cmp != 0;
+            return result ? "True" : "False";
+        }
+
         if (args.empty()) {
             if (caseInsensitiveStringCompare(member, "GetCurrentToolsVersion") == 0)
                 return "Current";
@@ -1074,6 +1130,13 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
     if (caseInsensitiveStringCompare(className, "System.Runtime.InteropServices.OSPlatform") == 0)
         return member;  // return the platform name ("Windows", "Linux", "OSX") as a string
 
+    // $([System.IO.FileInfo]::new('path')) / $([System.IO.DirectoryInfo]::new('path'))
+    // Model as a normalized path string so .FullName / .DirectoryName / .Name chains work.
+    if ((caseInsensitiveStringCompare(className, "System.IO.FileInfo") == 0 ||
+         caseInsensitiveStringCompare(className, "System.IO.DirectoryInfo") == 0) &&
+        caseInsensitiveStringCompare(member, "new") == 0 && !args.empty())
+        return Path::simplifyPath(args[0]);
+
     // Unknown class or method — return empty so import continues
     debugs.emplace_back("unknown class " + className + " or member " + member);
     return "";
@@ -1120,15 +1183,23 @@ struct ImportProject::PropertyValueExpander {
         return result;
     }
 
-    // Parses one method argument: a quoted string literal or a $(…) reference.
+    // Parses one method argument: a quoted string literal (with inner $(…)
+    // expansion) or an unquoted $(…) reference or bare word.
     std::string parseArg() {
         while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
             ++mPos;
         if (mPos < mStr.size() && mStr[mPos] == '\'') {
             ++mPos;
             std::string s;
-            while (mPos < mStr.size() && mStr[mPos] != '\'')
-                s += mStr[mPos++];
+            // Expand $(…) references embedded inside the quoted string so that
+            // e.g. '$(MSBuildThisFileDirectory)' is resolved before being passed
+            // to NormalizePath / NormalizeDirectory / Path.Combine, etc.
+            while (mPos < mStr.size() && mStr[mPos] != '\'') {
+                if (mStr.compare(mPos, 2, "$(") == 0)
+                    s += tryParseExpr();
+                else
+                    s += mStr[mPos++];
+            }
             if (mPos < mStr.size()) ++mPos;  // consume closing '\''
             return s;
         }
@@ -1164,6 +1235,9 @@ struct ImportProject::PropertyValueExpander {
                 member += mStr[mPos++];
             }
             std::vector<std::string> args;
+            // Skip optional whitespace between method name and '(' — legal in MSBuild.
+            while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+                ++mPos;
             if (mPos < mStr.size() && mStr[mPos] == '(') {
                 ++mPos;  // skip '('
                 while (mPos < mStr.size() && mStr[mPos] != ')') {
@@ -1174,9 +1248,53 @@ struct ImportProject::PropertyValueExpander {
                 }
                 if (mPos < mStr.size()) ++mPos;  // skip inner ')'
             }
-            if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip outer ')'
             mChanged = true;
-            return mProject.applyMSBuildStaticFunction(className, member, args);
+            std::string value = mProject.applyMSBuildStaticFunction(className, member, args);
+            // Handle optional .Property or .Method(args) chain on the result,
+            // e.g. $([System.IO.FileInfo]::new('path').DirectoryName).
+            while (mPos < mStr.size() && mStr[mPos] == '.') {
+                ++mPos;
+                std::string chainMethod;
+                while (mPos < mStr.size()) {
+                    const auto c = static_cast<unsigned char>(mStr[mPos]);
+                    if (!std::isalnum(c) && c != '_') break;
+                    chainMethod += mStr[mPos++];
+                }
+                if (mPos >= mStr.size() || mStr[mPos] != '(') {
+                    if (caseInsensitiveStringCompare(chainMethod, "Length") == 0)
+                        value = std::to_string(value.size());
+                    else if (caseInsensitiveStringCompare(chainMethod, "FullName") == 0)
+                        value = Path::simplifyPath(value);
+                    else if (caseInsensitiveStringCompare(chainMethod, "DirectoryName") == 0)
+                        value = Path::getPathFromFilename(value);
+                    else if (caseInsensitiveStringCompare(chainMethod, "Name") == 0) {
+                        const std::string p = Path::fromNativeSeparators(value);
+                        const auto sl = p.rfind('/');
+                        value = (sl != std::string::npos) ? p.substr(sl + 1) : p;
+                    } else {
+                        mProject.debugs.emplace_back("unhandled property access '." + chainMethod + "' after static function");
+                    }
+                    continue;  // allow further .Method() segments on the result
+                }
+                ++mPos;  // skip '('
+                std::vector<std::string> chainArgs;
+                while (mPos < mStr.size() && mStr[mPos] != ')') {
+                    chainArgs.push_back(parseArg());
+                    while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+                        ++mPos;
+                    if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
+                }
+                if (mPos < mStr.size()) ++mPos;  // skip ')'
+                try {
+                    value = applyPropertyMethod(value, chainMethod, chainArgs);
+                } catch (const std::exception &e) {
+                    mProject.debugs.emplace_back(std::string("applyPropertyMethod (chained): ") + e.what());
+                } catch (...) {
+                    mProject.debugs.emplace_back("applyPropertyMethod (chained): unknown error for method '" + chainMethod + "'");
+                }
+            }
+            if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip outer ')'
+            return value;
         }
 
         const std::string name = parseIdentifier();
@@ -1204,7 +1322,18 @@ struct ImportProject::PropertyValueExpander {
                 // Property access without parentheses (e.g. $(Foo.Length)).
                 if (caseInsensitiveStringCompare(method, "Length") == 0)
                     value = std::to_string(value.size());
-                break;
+                else if (caseInsensitiveStringCompare(method, "FullName") == 0)
+                    value = Path::simplifyPath(value);
+                else if (caseInsensitiveStringCompare(method, "DirectoryName") == 0)
+                    value = Path::getPathFromFilename(value);
+                else if (caseInsensitiveStringCompare(method, "Name") == 0) {
+                    const std::string p = Path::fromNativeSeparators(value);
+                    const auto sl = p.rfind('/');
+                    value = (sl != std::string::npos) ? p.substr(sl + 1) : p;
+                } else {
+                    mProject.debugs.emplace_back("unhandled property access '." + method + "' on '" + name + "'");
+                }
+                continue;  // allow further .Method() segments on the result
             }
             ++mPos;  // skip '('
             std::vector<std::string> args;
@@ -1215,7 +1344,13 @@ struct ImportProject::PropertyValueExpander {
                 if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
             }
             if (mPos < mStr.size()) ++mPos;  // skip ')'
-            try { value = applyPropertyMethod(value, method, args); } catch (...) {}
+            try {
+                value = applyPropertyMethod(value, method, args);
+            } catch (const std::exception &e) {
+                mProject.debugs.emplace_back(std::string("applyPropertyMethod: ") + e.what());
+            } catch (...) {
+                mProject.debugs.emplace_back("applyPropertyMethod: unknown error for method '" + method + "'");
+            }
         }
         if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip closing ')'
         return value;
@@ -1919,6 +2054,7 @@ private:
                 member += mCondition[mPos++];
             }
             std::vector<std::string> args;
+            skipWhitespace();  // allow space between method name and '('
             if (mPos < mCondition.size() && mCondition[mPos] == '(') {
                 ++mPos;  // skip '('
                 skipWhitespace();
