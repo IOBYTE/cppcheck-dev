@@ -644,7 +644,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             // not defined at evaluation time.  Log it and bail out rather than treating
             // the raw reference text as a literal path component.
             for (const std::string &a : args) {
-				// cppcheck-suppress useStlAlgorithm
+                // cppcheck-suppress useStlAlgorithm
                 if (a.find("$(") != std::string::npos) {
                     debugs.emplace_back("NormalizePath: arg contains unexpanded property reference: " + a);
                     return "";
@@ -1818,7 +1818,6 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
 }
 
-
 // see https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions
 class ImportProject::ConditionParser {
 public:
@@ -2372,14 +2371,14 @@ namespace {
     }
 
     /// Return the filename (basename) component of a forward-slash-normalised path.
-    static std::string fileBasename(const std::string &path) {
+    std::string fileBasename(const std::string &path) {
         const auto pos = path.rfind('/');
         return (pos != std::string::npos) ? path.substr(pos + 1) : path;
     }
 
     /// Return the stem of \p filename (basename with its final extension removed).
     /// Strips only the tail extension so "foo.targets.props" → "foo.targets", not "foo".
-    static std::string fileStem(const std::string &filename) {
+    std::string fileStem(const std::string &filename) {
         const std::string ext = Path::getFilenameExtension(filename);
         if (ext.empty() || filename.size() <= ext.size())
             return filename;
@@ -2391,7 +2390,7 @@ namespace {
     /// UNC paths  "//server/share/foo/"  →  "foo/"
     /// Local paths "C:/foo/"             →  "foo/"
     /// The trailing separator (if any) is preserved unchanged.
-    static std::string stripPathRoot(const std::string &path) {
+    std::string stripPathRoot(const std::string &path) {
         if (path.size() >= 2 && path[0] == '/' && path[1] == '/') {
             // UNC: //server/share/... — skip server then share component.
             const auto serverEnd = path.find('/', 2);
@@ -2583,11 +2582,9 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     // accumulation (e.g. <DisableSpecificWarnings>$(DisableSpecificWarnings);4100
     // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks.  Replace with the
     // previously accumulated metadata value, then erase any remaining tainted refs.
-    {
-        const std::string propSelfRef = "$(" + std::string(eName) + ")";
-        findAndReplace(text, propSelfRef, original);
-        findAndReplace(text, propSelfRef, "");
-    }
+    const std::string propSelfRef = "$(" + std::string(eName) + ")";
+    findAndReplace(text, propSelfRef, original);
+    findAndReplace(text, propSelfRef, "");
     metadata[eName] = text;
     checkUnexpandedExpressions(text, eName);
 }
@@ -2615,11 +2612,9 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     }
     expandMSBuildVariables(text, properties);
     // Handle $(eName) self-references: same accumulation pattern as addMetadata.
-    {
-        const std::string propSelfRef = "$(" + std::string(eName) + ")";
-        findAndReplace(text, propSelfRef, original);
-        findAndReplace(text, propSelfRef, "");
-    }
+    const std::string propSelfRef = "$(" + std::string(eName) + ")";
+    findAndReplace(text, propSelfRef, original);
+    findAndReplace(text, propSelfRef, "");
     checkUnexpandedExpressions(text, eName);
     return text;
 }
@@ -2948,17 +2943,15 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             // ForceImportBeforeCppProps: honour any value set before Microsoft.Cpp.props
             // is processed (e.g. by the vcxproj itself or by Directory.Build.props, which
             // was already imported via the Microsoft.Cpp.Default.props handler above).
-            {
-                auto it = properties.find("ForceImportBeforeCppProps");
-                if (it != properties.end()) {
-                    ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                    if (result > ImportResult::NotResolvable) {
-                        errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
-                        return result;
-                    }
+            auto it = properties.find("ForceImportBeforeCppProps");
+            if (it != properties.end()) {
+                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + it->second + "\" - " + importResultStr(result));
+                    return result;
                 }
             }
-
+            
             if (file.find("$(") != std::string::npos) {
                 if (phase == EvalPhase::Properties) {
                     // VCTargetsPath unresolved — provide output-dir defaults that Cpp.props defines,
@@ -2985,7 +2978,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 }
             }
 
-            auto it = properties.find("ForceImportAfterCppProps");
+            it = properties.find("ForceImportAfterCppProps");
             if (it != properties.end()) {
                 ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable) {
@@ -3079,8 +3072,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
                                 const char *proj = importGroup->Attribute("Project");
                                 debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
                             }
-                            if (result > ret)
-                                ret = result;
+                            ret = std::max(result, ret);
                         }
                     }
                 }
@@ -3126,8 +3118,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
             if (result > ImportResult::NotResolvable && phase != EvalPhase::Discover) {
                 const char *proj = node->Attribute("Project");
                 debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
-                if (result > ret)
-                    ret = result;
+                ret = std::max(result, ret);
             }
         }
     }
@@ -3249,16 +3240,15 @@ bool ImportProject::importVcxproj(const std::string &filename,
     }
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
-    {
-        // MSBuildProjectDirectoryNoRoot: like MSBuildThisFileDirectoryNoRoot but for the
-        // project itself.  ProjectDir has a trailing '/' which we strip to match the
-        // MSBuildProjectDirectory (no trailing separator) convention.
-        std::string noRoot = stripPathRoot(properties["ProjectDir"]);
-        if (!noRoot.empty() && noRoot.back() == '/')
-            noRoot.pop_back();
-        properties["MSBuildProjectDirectoryNoRoot"] = noRoot;
-    }
-
+    
+    // MSBuildProjectDirectoryNoRoot: like MSBuildThisFileDirectoryNoRoot but for the
+    // project itself.  ProjectDir has a trailing '/' which we strip to match the
+    // MSBuildProjectDirectory (no trailing separator) convention.
+    std::string noRoot = stripPathRoot(properties["ProjectDir"]);
+    if (!noRoot.empty() && noRoot.back() == '/')
+        noRoot.pop_back();
+    properties["MSBuildProjectDirectoryNoRoot"] = noRoot;
+    
     MSBuildThis::setMSBuildThis(nfilename, properties);
 
     std::string projectDir = properties["ProjectDir"];
