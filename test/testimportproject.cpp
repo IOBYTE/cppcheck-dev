@@ -932,7 +932,7 @@ private:
         // Before the fix this produced "" and a "unknown class MSBuild or member
         // NormalizeDirectory" debug entry because the arg parser never saw '('.
         ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizeDirectory ('/a', 'b', 'c'))"));
-        ASSERT_EQUALS("/a/b/c/",   cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath ('/a', 'b', 'c'))"));
+        ASSERT_EQUALS("/a/b/c",    cppcheck::testing::expandMSBuildExpression("$([MSBuild]::NormalizePath ('/a', 'b', 'c'))"));
         // $(…) references inside quoted args must be expanded before the function
         // runs, so that '..' resolution operates on real path components.
         // expandMSBuildProperties pre-populates Configuration and Platform; use
