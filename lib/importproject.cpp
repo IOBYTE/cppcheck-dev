@@ -2839,23 +2839,23 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                     properties["OutputPath"] = outDirIt->second;
             }
 
-            // Microsoft.Cpp.targets → Microsoft.Common.targets → Directory.Build.targets.
-            // Import it regardless of whether the VCTargetsPath is resolved.
-            {
+            if (file.find("$(") == std::string::npos) {
+                // Path is fully resolved — import the actual file.  The real import chain
+                // (Microsoft.Cpp.targets → Microsoft.Common.targets → Directory.Build.targets)
+                // will handle Directory.Build.targets, so do NOT import it synthetically here.
+                ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                if (result > ImportResult::NotResolvable) {
+                    errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
+                    return result;
+                }
+            } else {
+                // VCTargetsPath unresolved — the real import chain cannot run, so emulate its
+                // key side-effect: Microsoft.Cpp.targets → Microsoft.Common.targets → Directory.Build.targets.
                 std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
                 if (!directoryBuildTargets.empty()) {
                     ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                     if (result > ImportResult::NotResolvable)
                         debugs.emplace_back("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
-                }
-            }
-
-            if (file.find("$(") == std::string::npos) {
-                // Path is fully resolved — also import the actual file.
-                ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable) {
-                    errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
-                    return result;
                 }
             }
 
@@ -2881,28 +2881,30 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 }
             }
 
-            // Microsoft.Cpp.Default.props → Microsoft.Common.props → Directory.Build.props.
-            // Since cppcheck cannot follow that system import chain, emulate the key
-            // side-effect here so that properties like ReactNativeWindowsDir are available
-            // for any user imports that follow (including those between Default.props and Cpp.props).
-            {
-                std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
-                if (!directoryBuildProps.empty()) {
-                    ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                    if (result > ImportResult::NotResolvable)
-                        debugs.emplace_back("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
-                }
-            }
-
             if (file.find("$(") == std::string::npos) {
-                // Path is fully resolved — also import the actual file.
+                // Path is fully resolved — import the actual file.  The real import chain
+                // (Microsoft.Cpp.Default.props → Microsoft.Common.props → Directory.Build.props)
+                // will handle Directory.Build.props, so do NOT import it synthetically here.
                 ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable) {
                     errors.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
                     return result;
                 }
             } else if (phase == EvalPhase::Properties) {
-                // VCTargetsPath unresolved — emulate key defaults set by Microsoft.Cpp.Default.props.
+                // VCTargetsPath unresolved — the real import chain cannot run, so emulate its
+                // key side-effects here, including the Directory.Build.props import that
+                // Microsoft.Common.props would normally perform.
+                // Microsoft.Cpp.Default.props → Microsoft.Common.props → Directory.Build.props.
+                {
+                    std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
+                    if (!directoryBuildProps.empty()) {
+                        ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                        if (result > ImportResult::NotResolvable)
+                            debugs.emplace_back("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
+                    }
+                }
+
+                // Emulate key defaults set by Microsoft.Cpp.Default.props.
                 // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
                 // the .sln header or the importVcxproj default).  The mapping is:
                 //   VS 10 → v100, VS 11 → v110, VS 12 → v120,
