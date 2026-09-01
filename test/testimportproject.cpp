@@ -871,6 +871,26 @@ private:
         ASSERT_EQUALS("-1", cppcheck::testing::expandMSBuildProperties("$(Configuration.IndexOf('x'))", "Debug-Test", "Win32"));
         ASSERT_EQUALS("7",  cppcheck::testing::expandMSBuildProperties("$(Configuration.LastIndexOf('e'))", "Debug-Test", "Win32"));
 
+        // PadLeft / PadRight
+        ASSERT_EQUALS("  hi", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('4'))", "hi", "Win32"));
+        ASSERT_EQUALS("hi  ", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadRight('4'))", "hi", "Win32"));
+        ASSERT_EQUALS("00hi", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('4', '0'))", "hi", "Win32"));
+        ASSERT_EQUALS("hi00", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadRight('4', '0'))", "hi", "Win32"));
+        // no padding needed when value already long enough
+        ASSERT_EQUALS("hello", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('3'))", "hello", "Win32"));
+        ASSERT_EQUALS("hello", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadRight('3'))", "hello", "Win32"));
+        // width exactly equal to value length — no padding
+        ASSERT_EQUALS("hi", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('2'))", "hi", "Win32"));
+        ASSERT_EQUALS("hi", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadRight('2'))", "hi", "Win32"));
+        // width 0 — no padding
+        ASSERT_EQUALS("hi", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('0'))", "hi", "Win32"));
+        // chaining: pad then measure length
+        ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadLeft('6', '0').Length)", "hi", "Win32"));
+        ASSERT_EQUALS("6", cppcheck::testing::expandMSBuildProperties("$(Configuration.PadRight('6', '0').Length)", "hi", "Win32"));
+        // condition evaluation path
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.PadLeft('4', '0')) == '00hi'", "hi", "Win32"));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration.PadRight('4', '0')) == 'hi00'", "hi", "Win32"));
+
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(Configuration) == DEBUG", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$(configuration) == 'Debug'", "Debug", "Win32"));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' > '0x0F'", "", ""));
@@ -965,7 +985,13 @@ private:
         ASSERT_EQUALS(".cpp", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetExtension('bar.cpp'))"));
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
         ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
+        // Path.Combine: 1, 2, 3, N args; absolute segment resets path
+        ASSERT_EQUALS("a", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a'))"));
         ASSERT_EQUALS("a/b", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b'))"));
+        ASSERT_EQUALS("a/b/c", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b', 'c'))"));
+        ASSERT_EQUALS("a/b/c/d", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b', 'c', 'd'))"));
+        ASSERT_EQUALS("/abs/b", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', '/abs', 'b'))"));
+        ASSERT_EQUALS("/abs", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a', 'b', '/abs'))"));
         ASSERT_EQUALS(Path::fromNativeSeparators(Path::getCurrentPath()) + "/a/b/c/d", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::GetFullPath($([System.IO.Path]::Combine('a', 'b', 'c', 'd')))"));
 
         // --- Composite / nesting ---

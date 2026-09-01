@@ -418,6 +418,23 @@ static std::string applyPropertyMethod(std::string value,
         return std::to_string(found == std::string::npos ? -1L : static_cast<long>(found));
     }
 
+    if (caseInsensitiveStringCompare(method, "PadLeft") == 0 ||
+        caseInsensitiveStringCompare(method, "PadRight") == 0) {
+        if (args.empty() || args.size() > 2)
+            throw std::runtime_error(method + " requires one or two arguments");
+        char *end = nullptr;
+        const long totalWidth = std::strtol(args[0].c_str(), &end, 10);
+        if (end == args[0].c_str() || *end != '\0' || totalWidth < 0)
+            throw std::runtime_error(method + " totalWidth must be a non-negative integer");
+        const char padChar = (args.size() == 2 && !args[1].empty()) ? args[1][0] : ' ';
+        const auto width = static_cast<std::size_t>(totalWidth);
+        if (value.size() >= width)
+            return value;
+        const std::string padding(width - value.size(), padChar);
+        const bool left = caseInsensitiveStringCompare(method, "PadLeft") == 0;
+        return left ? padding + value : value + padding;
+    }
+
     throw std::runtime_error("Unhandled method '" + method + "'");
 }
 
@@ -754,14 +771,22 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 return Path::simplifyPath(toAbsolute(path));
             }
         }
-        if (args.size() == 2) {
-            if (caseInsensitiveStringCompare(member, "Combine") == 0) {
-                if (Path::isAbsolute(args[1]))
-                    return args[1];
-                const std::string sep =
-                    (!args[0].empty() && args[0].back() != '/' && args[0].back() != '\\') ? "/" : "";
-                return args[0] + sep + args[1];
+        if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
+            // Path.Combine(seg1[, seg2, ...]): an absolute segment resets the
+            // accumulated path; relative segments are joined with '/'.
+            std::string result = args[0];
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                if (Path::isAbsolute(args[i])) {
+                    result = args[i];
+                    continue;
+                }
+                if (!result.empty() && result.back() != '/' && result.back() != '\\')
+                    result += '/';
+                result += args[i];
             }
+            return result;
+        }
+        if (args.size() == 2) {
             if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
                 const std::string path = Path::fromNativeSeparators(args[0]);
                 const std::string basePath = Path::fromNativeSeparators(args[1]);
@@ -774,21 +799,6 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     combined += '/';
                 combined += path;
                 return Path::simplifyPath(combined);
-            }
-        }
-        if (args.size() > 2) {
-            if (caseInsensitiveStringCompare(member, "Combine") == 0) {
-                std::string result = args[0];
-                for (std::size_t i = 1; i < args.size(); ++i) {
-                    if (Path::isAbsolute(args[i])) {
-                        result = args[i];
-                        continue;
-                    }
-                    if (!result.empty() && result.back() != '/' && result.back() != '\\')
-                        result += '/';
-                    result += args[i];
-                }
-                return result;
             }
         }
     }
