@@ -849,8 +849,13 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             // accumulated path; relative segments are joined with '/'.
             std::string result = args[0];
             for (std::size_t i = 1; i < args.size(); ++i) {
-                if (Path::isAbsolute(args[i])) {
-                    result = args[i];
+                const std::string &seg = args[i];
+                const bool segAbsolute = !seg.empty() &&
+                                         (seg[0] == '/' || seg[0] == '\\' ||
+                                          (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':') ||
+                                          Path::isAbsolute(seg));
+                if (segAbsolute) {
+                    result = seg;
                     continue;
                 }
                 if (!result.empty() && result.back() != '/' && result.back() != '\\')
