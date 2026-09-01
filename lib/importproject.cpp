@@ -2542,15 +2542,18 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     // Normalize native path separators before expansion so property values are
     // stored with '/' and debug messages show normalized paths.
     text = Path::fromNativeSeparators(std::move(text));
-    const std::string original = properties[eName];
     const std::string selfRef = "$(" + std::string(eName) + ")";
+    // Pre-expand the prior value before embedding it so tokens already resolvable
+    // in this context are expanded inside `original` rather than being re-evaluated
+    // in the combined string.  This reduces the risk that step-3 cleanup erases
+    // content that legitimately arrived through the accumulated value.
+    std::string original = properties[eName];
+    expandMSBuildVariables(original, properties);
+    findAndReplace(original, selfRef, "");   // break any tainted self-ref in original
     findAndReplace(text, selfRef, original);
     expandMSBuildVariables(text, properties);
-    // Collapse any remaining self-references to "": if `original` was itself
-    // tainted (contained $(eName) from a prior incomplete expansion), the first
-    // findAndReplace propagates that taint.  A second pass with "" cleans it up,
-    // matching MSBuild's behaviour where a self-referencing property that is not
-    // yet defined expands to "".
+    // Safety net: erase self-references that survived (e.g. a token whose expansion
+    // is not yet available), matching MSBuild's "undefined = empty string" rule.
     findAndReplace(text, selfRef, "");
     properties[eName] = text;
     checkUnexpandedExpressions(text, eName);
@@ -2564,8 +2567,29 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     std::string text(eText ? eText : "");
     trimWhitespace(text);
     text = Path::fromNativeSeparators(std::move(text));
-    const std::string original = metadata[eName];
-    findAndReplace(text, "%(" + std::string(eName) + ")", original);
+    const std::string metaSelfRef = "%(" + std::string(eName) + ")";
+    const std::string propSelfRef  = "$(" + std::string(eName) + ")";
+    // Pre-expand the accumulated metadata value before embedding it: resolve %(other)
+    // metadata refs and $(prop) refs inside `original` first, then break any tainted
+    // self-references, so they don't propagate into the new value and risk step-3 erasure.
+    std::string original = metadata[eName];
+    findAndReplace(original, metaSelfRef, "");
+    {
+        std::string::size_type p = 0;
+        while ((p = original.find("%(", p)) != std::string::npos) {
+            const std::string::size_type e = original.find(')', p);
+            if (e == std::string::npos) break;
+            const std::string key = original.substr(p + 2, e - p - 2);
+            const auto it = metadata.find(key);
+            const std::string repl = (it != metadata.end()) ? it->second : std::string();
+            original.replace(p, e - p + 1, repl);
+            p += repl.size();
+        }
+    }
+    expandMSBuildVariables(original, properties);
+    findAndReplace(original, propSelfRef, "");
+
+    findAndReplace(text, metaSelfRef, original);
     std::string::size_type pos = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
         const std::string::size_type end = text.find(')', pos);
@@ -2580,9 +2604,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     expandMSBuildVariables(text, properties);
     // Handle $(eName) self-references: some props files use property-style
     // accumulation (e.g. <DisableSpecificWarnings>$(DisableSpecificWarnings);4100
-    // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks.  Replace with the
-    // previously accumulated metadata value, then erase any remaining tainted refs.
-    const std::string propSelfRef = "$(" + std::string(eName) + ")";
+    // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks.
     findAndReplace(text, propSelfRef, original);
     findAndReplace(text, propSelfRef, "");
     metadata[eName] = text;
@@ -2597,7 +2619,28 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     std::string text(eText);
     trimWhitespace(text);
     text = Path::fromNativeSeparators(std::move(text));
-    findAndReplace(text, "%(" + std::string(eName) + ")", original);
+    const std::string metaSelfRef = "%(" + std::string(eName) + ")";
+    const std::string propSelfRef  = "$(" + std::string(eName) + ")";
+    // Pre-expand `original` (the prior per-item value) before embedding it,
+    // matching the same strategy used in addMetadata and addProperty.
+    std::string expandedOriginal = original;
+    findAndReplace(expandedOriginal, metaSelfRef, "");
+    {
+        std::string::size_type p = 0;
+        while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
+            const std::string::size_type e = expandedOriginal.find(')', p);
+            if (e == std::string::npos) break;
+            const std::string key = expandedOriginal.substr(p + 2, e - p - 2);
+            const auto it = metadata.find(key);
+            const std::string repl = (it != metadata.end()) ? it->second : std::string();
+            expandedOriginal.replace(p, e - p + 1, repl);
+            p += repl.size();
+        }
+    }
+    expandMSBuildVariables(expandedOriginal, properties);
+    findAndReplace(expandedOriginal, propSelfRef, "");
+
+    findAndReplace(text, metaSelfRef, expandedOriginal);
     {
         std::string::size_type pos = 0;
         while ((pos = text.find("%(", pos)) != std::string::npos) {
@@ -2612,8 +2655,7 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     }
     expandMSBuildVariables(text, properties);
     // Handle $(eName) self-references: same accumulation pattern as addMetadata.
-    const std::string propSelfRef = "$(" + std::string(eName) + ")";
-    findAndReplace(text, propSelfRef, original);
+    findAndReplace(text, propSelfRef, expandedOriginal);
     findAndReplace(text, propSelfRef, "");
     checkUnexpandedExpressions(text, eName);
     return text;
