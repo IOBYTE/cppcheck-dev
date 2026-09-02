@@ -256,6 +256,30 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
+// Performs a case-insensitive substring search matching MSBuild string property behavior.
+static bool containsCaseInsensitive(const std::string &haystack, const std::string &needle)
+{
+    if (needle.empty())
+        return true;
+    if (needle.size() > haystack.size())
+        return false;
+
+    const std::size_t maxPos = haystack.size() - needle.size();
+    for (std::size_t i = 0; i <= maxPos; ++i) {
+        std::size_t j = 0;
+        for (; j < needle.size(); ++j) {
+            if (std::toupper(static_cast<unsigned char>(haystack[i + j])) !=
+                std::toupper(static_cast<unsigned char>(needle[j]))) {
+                break;
+            }
+        }
+        if (j == needle.size()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Find the ')' that matches the '(' at position parenPos.
 // Tracks depth for every '(' and ')', not just '$(' pairs: bare parentheses
 // inside static-function argument lists (e.g. Pow(2,3), Format(...)) must
@@ -303,19 +327,28 @@ static std::string applyPropertyMethod(std::string value,
     if (caseInsensitiveStringCompare(method, "Contains") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("Contains requires one argument");
-        return value.find(args[0]) != std::string::npos ? "True" : "False";
+        return containsCaseInsensitive(value, args[0]) ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "StartsWith") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("StartsWith requires one argument");
-        return startsWith(value, args[0]) ? "True" : "False";
+        if (args[0].size() > value.size())
+            return "False";
+
+        // We reuse the search function locked to position index 0
+        return containsCaseInsensitive(value.substr(0, args[0].size()), args[0]) ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "EndsWith") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("EndsWith requires one argument");
-        return endsWith(value, args[0].c_str(), args[0].size()) ? "True" : "False";
+        if (args[0].size() > value.size())
+            return "False";
+
+        // We reuse the search function locked to the exact tail boundary offset
+        const std::size_t offset = value.size() - args[0].size();
+        return containsCaseInsensitive(value.substr(offset), args[0]) ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "Trim") == 0) {
@@ -471,6 +504,98 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
+// Append one path segment to `result` using Windows Path.Combine semantics:
+//   UNC          \\server\share  -- double leading sep  -> full reset
+//   Drive-abs    C:\foo          -- letter : sep        -> full reset
+//   Root-rel     \foo            -- single leading sep  -> reset path, keep drive letter
+//   Drive-rel    C:foo           -- letter : no sep     -> strip drive, join as relative
+//   Relative     foo             -- everything else     -> plain join
+// When `checkIsAbsolute` is true, Path::isAbsolute() is also consulted for the
+// full-reset case (used by System.IO.Path::Combine which defers to the host).
+static void pathCombineAppend(std::string &result, const std::string &seg,
+                              bool checkIsAbsolute = false)
+{
+    if (seg.empty())
+        return;
+    if (((seg[0] == '/' || seg[0] == '\\') &&
+         seg.size() >= 2 && (seg[1] == '/' || seg[1] == '\\')) ||
+        (seg.size() >= 3 &&
+         std::isalpha(static_cast<unsigned char>(seg[0])) &&
+         seg[1] == ':' &&
+         (seg[2] == '/' || seg[2] == '\\')) ||
+        (checkIsAbsolute && Path::isAbsolute(seg))) {
+        // UNC or drive-absolute: full reset.
+        result = seg;
+    } else if (seg[0] == '/' || seg[0] == '\\') {
+        // Root-relative (\foo): reset path but keep accumulated drive letter.
+        if (result.size() >= 2 &&
+            std::isalpha(static_cast<unsigned char>(result[0])) &&
+            result[1] == ':')
+            result = result.substr(0, 2) + seg;
+        else
+            result = seg;
+    } else if (seg.size() >= 2 &&
+               std::isalpha(static_cast<unsigned char>(seg[0])) &&
+               seg[1] == ':') {
+        // Drive-relative (C:foo): strip drive prefix, join remainder as relative.
+        const std::string rel = seg.substr(2);
+        if (!rel.empty()) {
+            if (!result.empty() && result.back() != '/' && result.back() != '\\')
+                result += '/';
+            result += rel;
+        }
+    } else {
+        // Plain relative: join.
+        if (!result.empty() && result.back() != '/' && result.back() != '\\')
+            result += '/';
+        result += seg;
+    }
+}
+
+// MSBuild special characters that must be percent-encoded in property values.
+static const char MSBUILD_SPECIAL_CHARS[] = "%$@';?*!";
+
+// Encode every MSBuild special character in `s` as %XX.
+static std::string msbuildEscape(const std::string &s)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(s.size());
+    for (const unsigned char c : s) {
+        if (std::strchr(MSBUILD_SPECIAL_CHARS, static_cast<char>(c))) {
+            result += '%';
+            result += hex[c >> 4];
+            result += hex[c & 0xF];
+        } else {
+            result += static_cast<char>(c);
+        }
+    }
+    return result;
+}
+
+// Decode %XX sequences back to their original characters.
+static std::string msbuildUnescape(const std::string &s)
+{
+    std::string result;
+    result.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+            const auto hexVal = [](char c) -> unsigned char {
+                if (c >= '0' && c <= '9') return static_cast<unsigned char>(c - '0');
+                if (c >= 'a' && c <= 'f') return static_cast<unsigned char>(c - 'a' + 10);
+                return static_cast<unsigned char>(c - 'A' + 10);
+            };
+            result += static_cast<char>((hexVal(s[i + 1]) << 4) | hexVal(s[i + 2]));
+            i += 2;
+        } else {
+            result += s[i];
+        }
+    }
+    return result;
+}
+
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-format-attribute"
@@ -494,15 +619,50 @@ static std::string safeFormat(const char *fmt, Args... args) {
 static std::string getRelativePath(const std::string &absolutePath, const std::vector<std::string> &basePaths) {
     const std::string normAbs = Path::fromNativeSeparators(absolutePath);
 
-    // Split a forward-slash path into non-empty components, skipping any
-    // leading drive prefix (e.g. "C:") and the following '/'.
+    // Split a forward-slash path into components where the first element is
+    // the root token -- keeping roots distinct prevents the common-prefix
+    // algorithm from emitting relative paths that cross root boundaries.
+    //
+    //   UNC absolute  //server/share/a  -> ["//server/share", "a"]
+    //   Drive absolute  C:/foo/a        -> ["C:", "foo", "a"]
+    //   Root relative  /foo/a           -> ["/", "foo", "a"]
+    //   Relative       foo/a            -> ["foo", "a"]  (no root token)
+    //
+    // Cross-root pairs (different drive letters, or UNC paths whose server OR
+    // share differs) will get common == 0 and be rejected before any ".." are
+    // emitted, which is correct: no well-formed relative path can cross roots.
     const auto split = [](const std::string &s) {
         std::vector<std::string> parts;
         std::size_t pos = 0;
-        if (s.size() >= 2 && std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':')
+        if (s.size() >= 2 && s[0] == '/' && s[1] == '/') {
+            // UNC path: root is the "//server/share" unit.
+            const std::size_t serverEnd = s.find('/', 2);
+            if (serverEnd == std::string::npos) {
+                // Degenerate "//server" with no share -- treat whole string as root.
+                parts.push_back(s);
+                return parts;
+            }
+            const std::size_t shareEnd = s.find('/', serverEnd + 1);
+            if (shareEnd == std::string::npos) {
+                // "//server/share" with no trailing path.
+                parts.push_back(s);
+                return parts;
+            }
+            parts.push_back(s.substr(0, shareEnd)); // "//server/share"
+            pos = shareEnd + 1;
+        } else if (s.size() >= 2 &&
+                   std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
+            // Drive-letter path: root is the two-character drive token "C:".
+            parts.push_back(s.substr(0, 2));
             pos = 2;
-        if (pos < s.size() && s[pos] == '/')
-            ++pos;
+            if (pos < s.size() && s[pos] == '/') ++pos;
+        } else if (!s.empty() && s[0] == '/') {
+            // Root-relative path: root is "/".
+            parts.push_back("/");
+            pos = 1;
+        }
+        // else: relative path -- no root token is prepended.
+
         while (pos < s.size()) {
             const std::size_t slash = s.find('/', pos);
             std::string seg = s.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
@@ -569,10 +729,10 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
 std::string ImportProject::applyMSBuildStaticFunction(const std::string &className,
                                                       const std::string &member,
                                                       const std::vector<std::string> &args) {
-    const auto toInt = [](const std::string &s, long &out) -> bool {
+    const auto toInt = [](const std::string &s, long long &out) -> bool {
         if (s.empty()) return false;
         char *end = nullptr;
-        out = std::strtol(s.c_str(), &end, 10);
+        out = std::strtoll(s.c_str(), &end, 10);
         return end != s.c_str() && *end == '\0';
     };
 
@@ -599,7 +759,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
 
         // Arithmetic: Add, Subtract, Multiply, Divide, Modulo
         if (args.size() == 2) {
-            long a = 0, b = 0;
+            long long a = 0, b = 0;
             if (toInt(args[0], a) && toInt(args[1], b)) {
                 if (caseInsensitiveStringCompare(member, "Add") == 0)
                     return std::to_string(a + b);
@@ -659,54 +819,12 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     return "";
                 }
             }
-            // Join: an absolute segment resets the accumulated path (Path.Combine semantics).
             std::string result = args[0];
-            for (std::size_t i = 1; i < args.size(); ++i) {
-                const std::string &seg = args[i];
-                const bool segAbsolute = !seg.empty() &&
-                                         (seg[0] == '/' || seg[0] == '\\' ||
-                                          (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':'));
-                if (segAbsolute) {
-                    result = seg;
-                } else {
-                    if (!result.empty() && result.back() != '/' && result.back() != '\\')
-                        result += '/';
-                    result += seg;
-                }
-            }
-            // Unify separators.
-            // cppcheck-suppress useStlAlgorithm
-            for (char &c : result) if (c == '\\') c = '/';
-            // Extract drive-letter or leading-slash prefix.
-            std::string prefix;
-            std::size_t pos = 0;
-            if (result.size() >= 2 && std::isalpha(static_cast<unsigned char>(result[0])) && result[1] == ':') {
-                prefix = result.substr(0, 2) + '/';
-                pos = (result.size() > 2 && result[2] == '/') ? 3 : 2;
-            } else if (!result.empty() && result[0] == '/') {
-                prefix = "/";
-                pos = 1;
-            }
-            // Resolve . and .. components.
-            std::vector<std::string> parts;
-            while (pos < result.size()) {
-                const std::size_t slash = result.find('/', pos);
-                const std::string seg = result.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
-                pos = (slash == std::string::npos) ? result.size() : slash + 1;
-                if (seg.empty() || seg == ".")
-                    continue;
-                if (seg == "..") {
-                    if (!parts.empty()) parts.pop_back();
-                } else {
-                    parts.push_back(seg);
-                }
-            }
-            std::string normalized = prefix;
-            for (std::size_t i = 0; i < parts.size(); ++i) {
-                if (i > 0) normalized += '/';
-                normalized += parts[i];
-            }
-            return normalized;
+            for (std::size_t i = 1; i < args.size(); ++i)
+                pathCombineAppend(result, args[i]);
+            // Delegate separator normalization and . / .. resolution to the
+            // central Path utilities so all path handling stays consistent.
+            return Path::simplifyPath(Path::fromNativeSeparators(result));
         }
 
         // $([MSBuild]::NormalizeDirectory(seg1[, seg2, ...])) -- same as NormalizePath
@@ -856,23 +974,9 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             }
         }
         if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
-            // Path.Combine(seg1[, seg2, ...]): an absolute segment resets the
-            // accumulated path; relative segments are joined with '/'.
             std::string result = args[0];
-            for (std::size_t i = 1; i < args.size(); ++i) {
-                const std::string &seg = args[i];
-                const bool segAbsolute = !seg.empty() &&
-                                         (seg[0] == '/' || seg[0] == '\\' ||
-                                          (seg.size() >= 2 && std::isalpha(static_cast<unsigned char>(seg[0])) && seg[1] == ':') ||
-                                          Path::isAbsolute(seg));
-                if (segAbsolute) {
-                    result = seg;
-                    continue;
-                }
-                if (!result.empty() && result.back() != '/' && result.back() != '\\')
-                    result += '/';
-                result += args[i];
-            }
+            for (std::size_t i = 1; i < args.size(); ++i)
+                pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true);
             return result;
         }
         if (args.size() == 2) {
@@ -917,7 +1021,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         // Format: replace {n} and {n:spec} placeholders; {{ and }} are literal braces.
         if (caseInsensitiveStringCompare(member, "Format") == 0 && !args.empty()) {
             // Apply a .NET composite-format specifier to a string value.
-            const auto applySpec = [](const std::string &arg, const std::string &spec) -> std::string {
+            const auto applySpec = [this](const std::string &arg, const std::string &spec) -> std::string {
                 if (spec.empty())
                     return arg;
                 const char specChar = spec[0];
@@ -931,7 +1035,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 }
 
                 char *iend = nullptr;
-                const long lval = std::strtol(arg.c_str(), &iend, 10);
+                const long long lval = std::strtoll(arg.c_str(), &iend, 10);
                 const bool isInt = !arg.empty() && iend != arg.c_str() && *iend == '\0';
 
                 char *dend = nullptr;
@@ -943,8 +1047,8 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                         return arg;
                     if (width > 0) {
                         // Handle negative numbers manually to keep '-' outside the zero padding
-                        if (lval == LONG_MIN) {
-                            // Prevents -lval overflow bug. LONG_MIN is 20 chars long.
+                        if (lval == LLONG_MIN) {
+                            // Prevents -lval overflow: LLONG_MIN magnitude is 19 digits.
                             const std::string magnitude = "9223372036854775808";
                             const int padding = width - static_cast<int>(magnitude.size());
 
@@ -954,24 +1058,24 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                             return safeFormat("-%s", magnitude.c_str());
                         }
                         if (lval < 0)
-                            return safeFormat("-%0*ld", width, -lval);
-                        return safeFormat("%0*ld", width, lval);
+                            return safeFormat("-%0*lld", width, -lval);
+                        return safeFormat("%0*lld", width, lval);
                     }
-                    return safeFormat("%ld", lval);
+                    return safeFormat("%lld", lval);
                 }
 
                 if (specChar == 'X' || specChar == 'x') {
                     if (!isInt)
                         return arg;
-                    const auto uval = static_cast<unsigned long>(lval);
+                    const auto uval = static_cast<unsigned long long>(lval);
                     if (width > 0) {
                         return specChar == 'X'
-                            ? safeFormat("%0*lX", width, uval)
-                            : safeFormat("%0*lx", width, uval);
+                            ? safeFormat("%0*llX", width, uval)
+                            : safeFormat("%0*llx", width, uval);
                     }
                     return specChar == 'X'
-                        ? safeFormat("%lX", uval)
-                        : safeFormat("%lx", uval);
+                        ? safeFormat("%llX", uval)
+                        : safeFormat("%llx", uval);
                 }
 
                 if (specChar == 'F' || specChar == 'f') {
@@ -993,15 +1097,17 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 if (specChar == 'G' || specChar == 'g') {
                     if (!isDouble)
                         return arg;
-                    if (width > 0) {
-                        return specChar == 'G'
-                            ? safeFormat("%.*G", width, dval)
-                            : safeFormat("%.*g", width, dval);
-                    }
+                    // .NET G/g without explicit precision uses 15 significant digits
+                    // for double; C's %g default of 6 is not the same thing.
+                    const int p = width > 0 ? width : 15;
                     return specChar == 'G'
-                        ? safeFormat("%G", dval)
-                        : safeFormat("%g", dval);
+                        ? safeFormat("%.*G", p, dval)
+                        : safeFormat("%.*g", p, dval);
                 }
+                // Unrecognised specifier -- return the raw argument unchanged and log
+                // so that MSBuild incompatibilities are visible rather than silent.
+                this->debugs.emplace_back(
+                    "String.Format: unsupported format specifier '" + spec + "'");
                 return arg;
             };
 
@@ -1060,11 +1166,25 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 if (caseInsensitiveStringCompare(member, "Abs") == 0)
                     return fmtDouble(x < 0 ? -x : x);
                 if (caseInsensitiveStringCompare(member, "Floor") == 0)
-                    return std::to_string(static_cast<long long>(x >= 0 ? x : x - 1));
+                    return fmtDouble(std::floor(x));
                 if (caseInsensitiveStringCompare(member, "Ceiling") == 0)
-                    return std::to_string(static_cast<long long>(x <= 0 ? x : x + 1));
-                if (caseInsensitiveStringCompare(member, "Round") == 0)
-                    return std::to_string(static_cast<long long>(x >= 0 ? x + 0.5 : x - 0.5));
+                    return fmtDouble(std::ceil(x));
+                if (caseInsensitiveStringCompare(member, "Round") == 0) {
+                    // .NET Math.Round defaults to banker's rounding (round-half-to-even),
+                    // not round-half-away-from-zero.
+                    const double fl = std::floor(x);
+                    const double frac = x - fl;
+                    long long rounded;
+                    if (frac < 0.5)
+                        rounded = static_cast<long long>(fl);
+                    else if (frac > 0.5)
+                        rounded = static_cast<long long>(fl) + 1;
+                    else { // exactly 0.5 -- round to nearest even integer
+                        const long long ifl = static_cast<long long>(fl);
+                        rounded = ((ifl % 2) == 0) ? ifl : ifl + 1;
+                    }
+                    return std::to_string(rounded);
+                }
                 if (caseInsensitiveStringCompare(member, "Sqrt") == 0 && x >= 0)
                     return fmtDouble(std::sqrt(x));
                 if (caseInsensitiveStringCompare(member, "Log") == 0 && x > 0)
@@ -1088,44 +1208,13 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
 
     // $([MSBuild]::Escape / Unescape) -- encode/decode MSBuild special chars as %XX
     if (caseInsensitiveStringCompare(className, "MSBuild") == 0 && args.size() == 1) {
-        if (caseInsensitiveStringCompare(member, "Escape") == 0) {
-            static const char special[] = "%$@';?*!";
-            std::string result;
-            for (const unsigned char c : args[0]) {
-                if (std::strchr(special, static_cast<char>(c))) {
-                    const char hex[] = "0123456789ABCDEF";
-                    result += '%';
-                    result += hex[(c >> 4) & 0xF];
-                    result += hex[c & 0xF];
-                } else {
-                    result += static_cast<char>(c);
-                }
-            }
-            return result;
-        }
-        if (caseInsensitiveStringCompare(member, "Unescape") == 0) {
-            std::string result;
-            const std::string &s = args[0];
-            for (std::size_t i = 0; i < s.size(); ++i) {
-                if (s[i] == '%' && i + 2 < s.size() &&
-                    std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-                    std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-                    const auto nibble = [](char c) -> unsigned char {
-                        if (c >= '0' && c <= '9') return static_cast<unsigned char>(c - '0');
-                        if (c >= 'a' && c <= 'f') return static_cast<unsigned char>(c - 'a' + 10);
-                        return static_cast<unsigned char>(c - 'A' + 10);
-                    };
-                    result += static_cast<char>((nibble(s[i + 1]) << 4) | nibble(s[i + 2]));
-                    i += 2;
-                } else {
-                    result += s[i];
-                }
-            }
-            return result;
-        }
+        if (caseInsensitiveStringCompare(member, "Escape") == 0)
+            return msbuildEscape(args[0]);
+        if (caseInsensitiveStringCompare(member, "Unescape") == 0)
+            return msbuildUnescape(args[0]);
         // Bitwise operations
         {
-            long a = 0;
+            long long a = 0;
             if (toInt(args[0], a)) {
                 if (caseInsensitiveStringCompare(member, "BitwiseNot") == 0)
                     return std::to_string(~a);
@@ -1134,7 +1223,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
     }
 
     if (caseInsensitiveStringCompare(className, "MSBuild") == 0 && args.size() == 2) {
-        long a = 0, b = 0;
+        long long a = 0, b = 0;
         if (toInt(args[0], a) && toInt(args[1], b)) {
             if (caseInsensitiveStringCompare(member, "BitwiseAnd") == 0)
                 return std::to_string(a & b);
@@ -1605,8 +1694,10 @@ bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
         std::list<ProjectConfiguration> projectConfigurationList;
         std::list<ItemGroupClCompile> compileList;
         const ImportResult result = importPropsOrTargets(directorySolutionProps, properties, data, compileList, projectConfigurationList, stack);
-        if (result > ImportResult::NotResolvable)
+        if (result > ImportResult::NotResolvable) {
             debugs.emplace_back("Could not fully import \"" + directorySolutionProps + "\" - " + importResultStr(result) + " (continuing)");
+            return false;
+        }
     }
     return true;
 }
@@ -1664,7 +1755,15 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         }
         if (!startsWith(line,"Project("))
             continue;
-        const std::string::size_type pos = line.find(".vcxproj");
+        // Search for .vcxproj only in the path field (third quoted token), not in
+        // the project display name which precedes it.  SLN line format is:
+        //   Project("{TypeGUID}") = "DisplayName", "RelativePath", "{ProjGUID}"
+        // The separator between display name and path is the first ", " after ") = ".
+        const std::string::size_type eqMark = line.find(") = \"");
+        const std::string::size_type searchStart = (eqMark != std::string::npos)
+            ? line.find("\", \"", eqMark) + 3
+            : 0;
+        const std::string::size_type pos = line.find(".vcxproj", searchStart);
         if (pos == std::string::npos)
             continue;
         const std::string::size_type pos1 = line.rfind('\"',pos);
@@ -2356,7 +2455,7 @@ private:
         return applyPropertyMethod(std::move(value), method, args);
     }
 
-    bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
+    bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const {
         if (op == "==" || op == "!=") {
             // MSBuild == / != is a plain case-insensitive string comparison.
             const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
@@ -2411,9 +2510,11 @@ private:
 bool ImportProject::evalCondition(const std::string &condition, const PropertiesMap &properties) {
     try {
         return ConditionParser(*this, condition, properties).parse();
-    } catch (const std::exception &) {
-        // malformed or unhandled condition syntax (e.g. property functions,
-        // unknown methods, bare .Property access) -- treat as false so import continues
+    } catch (const std::exception &e) {
+        // Malformed or unsupported condition syntax.  Log so callers can
+        // distinguish "evaluated false" from "could not be evaluated" -- the
+        // build behavior (treat as false and continue) is unchanged.
+        debugs.emplace_back(std::string("condition unsupported: '") + condition + "': " + e.what());
         return false;
     }
 }
@@ -2797,9 +2898,90 @@ const std::string &ImportProject::importResultStr(ImportProject::ImportResult re
     return unknown;
 }
 
+static bool matchesAny(const std::string &filename,
+                       const std::vector<std::string> &paths)
+{
+    for (const std::string &p : paths) {
+        // cppcheck-suppress useStlAlgorithm
+        if (Path::sameFileName(filename, p))
+            return true;
+    }
+    return false;
+}
+
+bool ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
+                                        const PropertiesMap &properties,
+                                        MetadataMap &metadata)
+{
+    const char *text = e1->GetText();
+    if (!text)
+        return false;
+    if (hasName(e1, "ExcludedFromBuild", properties)) {
+        std::string val(text);
+        expandMSBuildVariables(val, properties);
+        return caseInsensitiveStringCompare(val, "true") == 0;
+    }
+    static const char *const METADATA_KEYS[] = {
+        "AdditionalIncludeDirectories",
+        "ForcedIncludeFiles",
+        "PreprocessorDefinitions",
+        "LanguageStandard",
+        "LanguageStandard_C",
+        "AdditionalOptions",
+        "AdditionalUsingDirectories",
+    };
+    for (const char *key : METADATA_KEYS) {
+        // cppcheck-suppress useStlAlgorithm
+        if (hasName(e1, key, properties)) {
+            auto &v = metadata[key];
+            v = getMetadata(e1, properties, metadata, v);
+            return false;
+        }
+    }
+    return false;
+}
+
+// Expand a semicolon-separated MSBuild item spec (possibly containing
+// $(Property) references) into a list of resolved absolute paths.
+// Segments containing glob wildcards (* ?) are logged to debugs and omitted.
+std::vector<std::string> ImportProject::expandItemSpec(const std::string &spec,
+                                                       const std::string &projectDir,
+                                                       const PropertiesMap &properties)
+{
+    // Expand property references so that values like "$(MyFiles)" that resolve
+    // to "a.cpp;b.cpp" are split correctly after substitution.
+    std::string expanded = spec;
+    expandMSBuildVariables(expanded, properties);
+
+    std::vector<std::string> result;
+    std::string seg;
+    for (std::size_t i = 0; i <= expanded.size(); ++i) {
+        const char c = (i < expanded.size()) ? expanded[i] : ';';
+        if (c == ';') {
+            // Trim leading/trailing whitespace.
+            std::size_t lo = 0, hi = seg.size();
+            while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo]))) ++lo;
+            while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1]))) --hi;
+            if (lo < hi) {
+                const std::string trimmed = seg.substr(lo, hi - lo);
+                if (trimmed.find('*') != std::string::npos ||
+                    trimmed.find('?') != std::string::npos) {
+                    debugs.emplace_back("ClCompile item glob not supported, skipped: '" + trimmed + "'");
+                } else {
+                    result.push_back(toAbsolute(trimmed, projectDir, properties));
+                }
+            }
+            seg.clear();
+        } else {
+            seg += c;
+        }
+    }
+    return result;
+}
+
 ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElement *node,
                                                          const std::string &projectDir,
-                                                         PropertiesMap &properties,
+                                                         const PropertiesMap &properties,
                                                          const MetadataMap &metadata,
                                                          std::list<ItemGroupClCompile> &compileList) {
     const char *include = node->Attribute("Include");
@@ -2816,38 +2998,9 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
     bool excludedFromBuild = false;
 
     for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-        const char *text = e1->GetText();
-        if (!text)
-            continue;
-
-        if (hasName(e1, "ExcludedFromBuild", properties)) {
-            std::string excludedText(text);
-            expandMSBuildVariables(excludedText, properties);
-            if (caseInsensitiveStringCompare(excludedText, "true") == 0) {
-                excludedFromBuild = true;
-                break;
-            }
-        } else if (hasName(e1, "AdditionalIncludeDirectories", properties)) {
-            auto &v = compile.metadata["AdditionalIncludeDirectories"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "ForcedIncludeFiles", properties)) {
-            auto &v = compile.metadata["ForcedIncludeFiles"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "PreprocessorDefinitions", properties)) {
-            auto &v = compile.metadata["PreprocessorDefinitions"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "LanguageStandard", properties)) {
-            auto &v = compile.metadata["LanguageStandard"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "LanguageStandard_C", properties)) {
-            auto &v = compile.metadata["LanguageStandard_C"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "AdditionalOptions", properties)) {
-            auto &v = compile.metadata["AdditionalOptions"];
-            v = getMetadata(e1, properties, compile.metadata, v);
-        } else if (hasName(e1, "AdditionalUsingDirectories", properties)) {
-            auto &v = compile.metadata["AdditionalUsingDirectories"];
-            v = getMetadata(e1, properties, compile.metadata, v);
+        if (applyClCompileChild(e1, properties, compile.metadata)) {
+            excludedFromBuild = true;
+            break;
         }
     }
 
@@ -2933,6 +3086,69 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
 
     if (!excludedFromBuild)
         compileList.emplace_back(compile);
+
+    return ImportResult::Ok;
+}
+
+// Handle <ClCompile Update="..."> inside an ItemGroup.
+// Finds existing items in compileList whose path matches the spec and applies
+// the child-element metadata overrides.  If ExcludedFromBuild is set to true
+// the matched items are removed from the list.
+ImportProject::ImportResult ImportProject::importCompileUpdate(const tinyxml2::XMLElement *node,
+                                                               const std::string &projectDir,
+                                                               const PropertiesMap &properties,
+                                                               std::list<ItemGroupClCompile> &compileList)
+{
+    const char *update = node->Attribute("Update");
+    if (!update)
+        return ImportResult::NotFound;
+
+    const std::vector<std::string> paths = expandItemSpec(update, projectDir, properties);
+    if (paths.empty())
+        return ImportResult::NotFound;
+
+    std::vector<std::string> excludedNames;
+
+    for (ItemGroupClCompile &compile : compileList) {
+        if (!matchesAny(compile.filename, paths))
+            continue;
+
+        for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
+            if (applyClCompileChild(e1, properties, compile.metadata)) {
+                excludedNames.push_back(compile.filename);
+                break;
+            }
+        }
+    }
+
+    if (!excludedNames.empty()) {
+        compileList.remove_if([&excludedNames](const ItemGroupClCompile &c) {
+            return matchesAny(c.filename, excludedNames);
+        });
+    }
+
+    return ImportResult::Ok;
+}
+
+// Handle <ClCompile Remove="..."> inside an ItemGroup.
+// Removes every item in compileList whose path matches the semicolon-separated spec.
+ImportProject::ImportResult ImportProject::importCompileRemove(
+    const tinyxml2::XMLElement *node,
+    const std::string &projectDir,
+    const PropertiesMap &properties,
+    std::list<ItemGroupClCompile> &compileList)
+{
+    const char *remove = node->Attribute("Remove");
+    if (!remove)
+        return ImportResult::NotFound;
+
+    const std::vector<std::string> paths = expandItemSpec(remove, projectDir, properties);
+    if (paths.empty())
+        return ImportResult::NotFound;
+
+    compileList.remove_if([&paths](const ItemGroupClCompile &c) {
+        return matchesAny(c.filename, paths);
+    });
 
     return ImportResult::Ok;
 }
@@ -3312,7 +3528,12 @@ ImportProject::ImportResult ImportProject::importVcxitems(const std::string &ite
             if (phase == EvalPhase::Items) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
                     if (hasName(e, "ClCompile", properties)) {
-                        importCompile(e, itemsDir, properties, metadata, compileList);
+                        if (e->Attribute("Include"))
+                            importCompile(e, itemsDir, properties, metadata, compileList);
+                        else if (e->Attribute("Update"))
+                            importCompileUpdate(e, itemsDir, properties, compileList);
+                        else if (e->Attribute("Remove"))
+                            importCompileRemove(e, itemsDir, properties, compileList);
                     }
                 }
             }
@@ -3454,13 +3675,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
             const char *val = std::getenv(envVar);
             discoverProps.emplace(prop, val ? val : "");
         };
-        discoverSeedEnv("VsInstallRoot",         "VSINSTALLDIR");
-        discoverSeedEnv("VsInstallDir",          "VSINSTALLDIR");
-        discoverSeedEnv("VCInstallDir",          "VCINSTALLDIR");
+        discoverSeedEnv("VsInstallRoot", "VSINSTALLDIR");
+        discoverSeedEnv("VsInstallDir", "VSINSTALLDIR");
+        discoverSeedEnv("VCInstallDir", "VCINSTALLDIR");
         discoverSeedEnv("MSBuildProgramFiles32", "ProgramFiles(x86)");
-        discoverSeedEnv("WindowsSdkDir_10",      "WindowsSdkDir");
+        discoverSeedEnv("WindowsSdkDir_10", "WindowsSdkDir");
         // MSBuild-internal properties with no env var equivalent.
-        discoverProps.emplace("VC_LibraryPath_x64",         "");
+        discoverProps.emplace("VC_LibraryPath_x64", "");
         discoverProps.emplace("WindowsSDK_WindowsMetadata", "");
         discoverProps.emplace("WindowsSDK_LibraryPath_x64", "");
         MetadataMap discoverMeta;
@@ -3520,10 +3741,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
                             if (!projectAttribute)
                                 continue;
                             const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                            if (result > ImportResult::NotResolvable) {
-                                const char *proj_ = e->Attribute("Project");
-                                debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
-                            }
+                            if (result > ImportResult::NotResolvable)
+                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
                         }
                     }
                 } else if (labelAttribute && caseInsensitiveStringCompare(labelAttribute, "Shared") == 0) {
@@ -3538,12 +3757,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                 ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
                                 if (result > ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                                if (result == ImportResult::NotResolvable) {
+                                if (result == ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
-                                }
-                            } else {
+                            } else
                                 debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
-                            }
                         }
                     }
                 } else {
@@ -3555,10 +3772,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
                             if (!projectAttribute)
                                 continue;
                             const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                            if (result > ImportResult::NotResolvable) {
-                                const char *proj_ = e->Attribute("Project");
-                                debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
-                            }
+                            if (result > ImportResult::NotResolvable)
+                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
                         }
                     }
                 }
@@ -3607,18 +3822,16 @@ bool ImportProject::importVcxproj(const std::string &filename,
                             if (!projectAttribute)
                                 continue;
                             const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
-                            if (result > ImportResult::NotResolvable) {
-                                const char *proj_ = e->Attribute("Project");
-                                debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
-                            }
+                            if (result > ImportResult::NotResolvable)
+                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
                         }
                     }
                 }
             } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
                 const ImportResult result = importProject(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
                 if (result > ImportResult::NotResolvable) {
-                    const char *proj_ = node->Attribute("Project");
-                    debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
+                    const char *projectAttribute = node->Attribute("Project");
+                    debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute ? projectAttribute : "") + "\" - " + importResultStr(result) + " (continuing)");
                 }
             }
         }
@@ -3630,8 +3843,14 @@ bool ImportProject::importVcxproj(const std::string &filename,
         for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
             if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                    if (hasNameAndAttribute(e, "ClCompile", "Include", properties))
-                        importCompile(e, projectDir, properties, metadata, compileList);
+                    if (hasName(e, "ClCompile", properties)) {
+                        if (e->Attribute("Include"))
+                            importCompile(e, projectDir, properties, metadata, compileList);
+                        else if (e->Attribute("Update"))
+                            importCompileUpdate(e, projectDir, properties, compileList);
+                        else if (e->Attribute("Remove"))
+                            importCompileRemove(e, projectDir, properties, compileList);
+                    }
                 }
             } else if (hasName(node, "ImportGroup", properties)) {
                 const char *labelAttribute = node->Attribute("Label");
@@ -3646,9 +3865,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                 ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
                                 if (result > ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                                if (result == ImportResult::NotResolvable) {
+                                if (result == ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
-                                }
                             }
                         }
                     }
@@ -3659,18 +3877,16 @@ bool ImportProject::importVcxproj(const std::string &filename,
                             if (!projectAttribute)
                                 continue;
                             const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
-                            if (result > ImportResult::NotResolvable) {
-                                const char *proj_ = e->Attribute("Project");
-                                debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
-                            }
+                            if (result > ImportResult::NotResolvable)
+                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
                         }
                     }
                 }
             } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
                 const ImportResult result = importProject(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
                 if (result > ImportResult::NotResolvable) {
-                    const char *proj_ = node->Attribute("Project");
-                    debugs.emplace_back("Could not fully import \"" + std::string(proj_ ? proj_ : "") + "\" - " + importResultStr(result) + " (continuing)");
+                    const char *projectAttribute = node->Attribute("Project");
+                    debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute ? projectAttribute : "") + "\" - " + importResultStr(result) + " (continuing)");
                 }
             }
         }

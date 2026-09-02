@@ -207,12 +207,26 @@ private:
                                EvalPhase phase = EvalPhase::Properties);
     ImportResult importCompile(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
-                               PropertiesMap &properties,
+                               const PropertiesMap &properties,
                                const MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList);
+    ImportResult importCompileUpdate(const tinyxml2::XMLElement *node,
+                                     const std::string &projectDir,
+                                     const PropertiesMap &properties,
+                                     std::list<ItemGroupClCompile> &compileList);
+    ImportResult importCompileRemove(const tinyxml2::XMLElement *node,
+                                     const std::string &projectDir,
+                                     const PropertiesMap &properties,
+                                     std::list<ItemGroupClCompile> &compileList);
+    std::vector<std::string> expandItemSpec(const std::string &spec,
+                                            const std::string &projectDir,
+                                            const PropertiesMap &properties);
     std::string applyMSBuildStaticFunction(const std::string &className,
                                            const std::string &member,
                                            const std::vector<std::string> &args);
+    bool applyClCompileChild(const tinyxml2::XMLElement *e1,
+                             const PropertiesMap &properties,
+                             MetadataMap &metadata);
     void expandMSBuildVariables(std::string &s, const PropertiesMap &properties);
     bool evalCondition(const std::string &condition, const PropertiesMap &properties);
     bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
