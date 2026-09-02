@@ -1172,16 +1172,20 @@ private:
         // .vcxproj test with <VisualStudioVersion> set would be needed to exercise
         // the property-lookup path directly.
 
-        // fallback Current = { 18 } (VS 2026)
-        // Use unambiguous major-version differences to avoid dependence on how
-        // compareVersions handles vectors of different lengths ({18} vs {18,0}).
-        // "Current" > "17.0" -> 18 > 17 -> true
+        // fallback Current = MSBuildVersion::parse("18.0") = {18,0} (VS 2026)
+        // Now that the fallback is a two-component version "18.0", the equal-major
+        // comparisons work correctly without .NET single-component ambiguity.
+        // "Current" >= "18.0" -> {18,0} >= {18,0} -> true
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' >= '18.0'", "Debug", "Win32"));
+        // "Current" <= "18.0" -> {18,0} <= {18,0} -> true
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' <= '18.0'", "Debug", "Win32"));
+        // "Current" > "17.0" -> {18,0} > {17,0} -> true
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' > '17.0'", "Debug", "Win32"));
-        // "17.0" < "Current" -> 17 < 18 -> true
+        // "17.0" < "Current" -> {17,0} < {18,0} -> true
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' < 'Current'", "Debug", "Win32"));
-        // "Current" < "19.0" -> 18 < 19 -> true
+        // "Current" < "19.0" -> {18,0} < {19,0} -> true
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' < '19.0'", "Debug", "Win32"));
-        // "Current" > "19.0" -> 18 > 19 -> false
+        // "Current" > "19.0" -> {18,0} > {19,0} -> false
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Current' > '19.0'", "Debug", "Win32"));
     }
 

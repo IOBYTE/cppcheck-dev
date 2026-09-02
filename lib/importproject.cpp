@@ -39,6 +39,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -255,18 +256,21 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
-// Find the ')' that matches the '(' at position parenPos, handling nested '$(' pairs.
+// Find the ')' that matches the '(' at position parenPos.
+// Tracks depth for every '(' and ')', not just '$(' pairs: bare parentheses
+// inside static-function argument lists (e.g. Pow(2,3), Format(...)) must
+// also open and close a nesting level, otherwise the inner ')' would be
+// mistaken for the match of the outer one.
 static std::string::size_type findMatchingParen(const std::string &s, std::string::size_type parenPos)
 {
     int depth = 0;
     for (std::string::size_type i = parenPos; i < s.size(); ++i) {
-        if (s.compare(i, 2, "$(") == 0) {
+        if (s[i] == '(')
             ++depth;
-            ++i;  // skip the '(' on next iteration increment
-        } else if (s[i] == ')') {
+        else if (s[i] == ')') {
+            --depth;
             if (depth == 0)
                 return i;
-            --depth;
         }
     }
     return std::string::npos;
@@ -1872,6 +1876,109 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
 }
 
+/** MSBuild version number: one or more dot-separated non-negative integers.
+ *
+ *  Comparison follows .NET System.Version semantics: missing trailing
+ *  components are treated as -1 rather than 0, so "17" < "17.0" (because
+ *  new Version("17").Minor == -1 < 0 == new Version("17.0").Minor).
+ *
+ *  Use MSBuildVersion::parse() to construct from a string.  An empty
+ *  (default-constructed or failed-parse) instance compares as invalid;
+ *  callers should check empty() before comparing.
+ */
+class MSBuildVersion {
+public:
+    MSBuildVersion() = default;
+
+    /** Parse a version string ("17.0", "16.11.2", "v14.0").
+     *  Returns an empty (invalid) instance if \p s is not a valid version. */
+    static MSBuildVersion parse(const std::string &s) {
+        if (s.empty())
+            return MSBuildVersion();
+
+        std::size_t pos = (s[0] == 'v' || s[0] == 'V') ? 1 : 0;
+        if (pos == s.size())
+            return MSBuildVersion();
+
+        MSBuildVersion ver;
+        while (pos < s.size()) {
+            const std::size_t dot = s.find('.', pos);
+            const std::size_t end = (dot == std::string::npos) ? s.size() : dot;
+            if (end == pos)
+                return MSBuildVersion();
+
+            const std::string part = s.substr(pos, end - pos);
+            char *endPtr = nullptr;
+            const long value = std::strtol(part.c_str(), &endPtr, 10);
+
+            if (endPtr != part.c_str() && *endPtr == '\0')
+                ver.mComponents.push_back(static_cast<int>(value));
+            else
+                return MSBuildVersion();
+
+            if (dot == std::string::npos)
+                break;
+            pos = dot + 1;
+        }
+
+        if (ver.mComponents.empty())
+            return MSBuildVersion();
+
+        return ver;
+    }
+
+    /** True when this instance could not be parsed or was default-constructed. */
+    bool empty() const {
+        return mComponents.empty();
+    }
+
+    /** Return component \p i, or -1 if the version has fewer than i+1 components
+     *  (.NET semantics: Major/Minor/Build/Revision default to -1). */
+    int component(std::size_t i) const {
+        return (i < mComponents.size()) ? mComponents[i] : -1;
+    }
+
+    bool operator==(const MSBuildVersion &rhs) const { return cmp(rhs) == 0; }
+    bool operator!=(const MSBuildVersion &rhs) const { return cmp(rhs) != 0; }
+    bool operator< (const MSBuildVersion &rhs) const { return cmp(rhs) <  0; }
+    bool operator> (const MSBuildVersion &rhs) const { return cmp(rhs) >  0; }
+    bool operator<=(const MSBuildVersion &rhs) const { return cmp(rhs) <= 0; }
+    bool operator>=(const MSBuildVersion &rhs) const { return cmp(rhs) >= 0; }
+
+    /** Apply an MSBuild relational operator string ("<", ">", "<=", ">="). */
+    bool compareOp(const std::string &op, const MSBuildVersion &rhs) const {
+        if (op == "<")  return *this <  rhs;
+        if (op == ">")  return *this >  rhs;
+        if (op == "<=") return *this <= rhs;
+        if (op == ">=") return *this >= rhs;
+        return false;
+    }
+
+    std::string toString() const {
+        std::string s;
+        for (std::size_t i = 0; i < mComponents.size(); ++i) {
+            if (i > 0)
+                s += '.';
+            s += std::to_string(mComponents[i]);
+        }
+        return s;
+    }
+
+private:
+    std::vector<int> mComponents;
+
+    int cmp(const MSBuildVersion &rhs) const {
+        const std::size_t count = std::max(mComponents.size(), rhs.mComponents.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            const int l = component(i);
+            const int r = rhs.component(i);
+            if (l < r) return -1;
+            if (l > r) return  1;
+        }
+        return 0;
+    }
+};
+
 // see https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions
 class ImportProject::ConditionParser {
 public:
@@ -2237,117 +2344,53 @@ private:
         return applyPropertyMethod(std::move(value), method, args);
     }
 
-    static int compareVersions(const std::vector<int> &lhs,
-                               const std::vector<int> &rhs) {
-        const std::size_t count = std::max(lhs.size(), rhs.size());
-
-        for (std::size_t i = 0; i < count; ++i) {
-            // Missing trailing components are treated as -1, matching .NET Version semantics:
-            // new Version("17").Minor == -1, so "17" < "17.0" is true in real MSBuild.
-            const int l = (i < lhs.size()) ? lhs[i] : -1;
-            const int r = (i < rhs.size()) ? rhs[i] : -1;
-            if (l < r)
-                return -1;
-            if (l > r)
-                return 1;
-        }
-
-        return 0;
-    }
-
-    static bool compareVersionResult(int result, const std::string &op) {
-        if (op == "<")
-            return result < 0;
-        if (op == ">")
-            return result > 0;
-        if (op == "<=")
-            return result <= 0;
-        if (op == ">=")
-            return result >= 0;
-        return false;
-    }
-
     bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) {
-        const auto parseVersion = [](const std::string &s) -> std::vector<int> {
-            if (s.empty())
-                return {};
-
-            std::size_t pos = (s[0] == 'v' || s[0] == 'V') ? 1 : 0;
-            if (pos == s.size())
-                return {};
-
-            std::vector<int> parts;
-            while (pos < s.size()) {
-                const std::size_t dot = s.find('.', pos);
-                const std::size_t end =
-                    dot == std::string::npos ? s.size() : dot;
-
-                if (end == pos)
-                    return {};
-
-                const std::string part = s.substr(pos, end - pos);
-                char *endPtr = nullptr;
-                const long value = std::strtol(part.c_str(), &endPtr, 10);
-
-                if (endPtr != part.c_str() && *endPtr == '\0')
-                    parts.push_back(static_cast<int>(value));
-                else
-                    return {};
-
-                if (dot == std::string::npos)
-                    break;
-
-                pos = dot + 1;
-            }
-
-            if (parts.empty())
-                return {};
-
-            return parts;
-        };
-
         if (op == "==" || op == "!=") {
             // MSBuild == / != is a plain case-insensitive string comparison.
             const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
             return (op == "==") ? strEqual : !strEqual;
         }
 
-        std::vector<int> currentVersion;
-        const PropertiesMap::const_iterator vsverIt = mVariables.find("VisualStudioVersion");
-        if (vsverIt != mVariables.end())
-            currentVersion = parseVersion(vsverIt->second);
-
+        // MSBuild keyword "Current" represents the installed toolset version.
+        // Derive from VisualStudioVersion in the properties map (VS version ==
+        // MSBuild version).  Fall back to "18.0" (VS 2026) if absent or unparseable.
+        // Use the full version string so that "Current" >= "18.0" is true when
+        // VisualStudioVersion is "18.0", not false due to a single-component {18}.
+        MSBuildVersion currentVersion;
+        {
+            const PropertiesMap::const_iterator it = mVariables.find("VisualStudioVersion");
+            if (it != mVariables.end())
+                currentVersion = MSBuildVersion::parse(it->second);
+        }
         if (currentVersion.empty())
-            currentVersion.push_back(18); // fallback: VS 2026
+            currentVersion = MSBuildVersion::parse("18.0"); // fallback: VS 2026
 
         if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
-            const auto rhsVersion = parseVersion(rhs);
-            if (!rhsVersion.empty()) {
-                return compareVersionResult(compareVersions(currentVersion, rhsVersion), op);
-            }
+            const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
+            if (!rhsVersion.empty())
+                return currentVersion.compareOp(op, rhsVersion);
         }
 
         if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
-            const auto lhsVersion = parseVersion(lhs);
-            if (!lhsVersion.empty()) {
-                return compareVersionResult(compareVersions(lhsVersion, currentVersion), op);
-            }
+            const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
+            if (!lhsVersion.empty())
+                return lhsVersion.compareOp(op, currentVersion);
         }
 
         long lhsInt = 0;
         long rhsInt = 0;
         if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
-            if (op == "<") return lhsInt < rhsInt;
-            if (op == ">") return lhsInt > rhsInt;
+            if (op == "<")  return lhsInt <  rhsInt;
+            if (op == ">")  return lhsInt >  rhsInt;
             if (op == "<=") return lhsInt <= rhsInt;
             if (op == ">=") return lhsInt >= rhsInt;
         }
 
-        const std::vector<int> lhsVersion = parseVersion(lhs);
-        const std::vector<int> rhsVersion = parseVersion(rhs);
+        const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
+        const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
 
         if (!lhsVersion.empty() && !rhsVersion.empty())
-            return compareVersionResult(compareVersions(lhsVersion, rhsVersion), op);
+            return lhsVersion.compareOp(op, rhsVersion);
 
         throw std::runtime_error("Cannot compare '" + lhs + "' and '" + rhs + "'");
     }
