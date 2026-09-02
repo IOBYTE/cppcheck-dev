@@ -34,9 +34,16 @@ def test_vcxproj_unicode_debug(tmp_path):
     dump_content = _get_dump_for_configuration(tmp_path, 'Debug|Win32')
 
     # the resolved defines are recorded in the <dump cfg="..."> attribute
-    assert 'cfg="_WIN32=1;UNICODE=1;_UNICODE=1;_MSC_VER=1900"' in dump_content
+    assert 'cfg="_WIN32=1;_M_IX86=600;UNICODE=1;_UNICODE=1;_MSC_VER=1900"' in dump_content
 
 def test_vcxproj_unicode_release(tmp_path):
     dump_content = _get_dump_for_configuration(tmp_path, 'Release|Win32')
 
-    assert 'cfg="_WIN32=1;_MSC_VER=1900;__AFXWIN_H__=1"' in dump_content
+    assert 'cfg="_WIN32=1;_M_IX86=600;_MSC_VER=1900;__AFXWIN_H__=1"' in dump_content
+
+def test_vcxproj_multibyte(tmp_path):
+    dump_content = _get_dump_for_configuration(tmp_path, 'MultiByte|Win32')
+
+    # MultiByte projects must define _MBCS and must NOT define UNICODE or _UNICODE (M-1)
+    assert '_MBCS=1' in dump_content
+    assert 'UNICODE' not in dump_content

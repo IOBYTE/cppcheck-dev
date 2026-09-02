@@ -55,12 +55,9 @@ namespace cppcheck {
     namespace testing
     {
         CPPCHECKLIB bool evaluateVcxprojCondition(const std::string& condition, const std::string& configuration, const std::string& platform);
-        /** Expand MSBuild property expressions ($(Name), $([Class]::Method(args))) in \p expr
-         *  against an empty property map and return the result. Intended for unit tests. */
         CPPCHECKLIB std::string expandMSBuildExpression(const std::string& expr);
-        /** Expand MSBuild property expressions in \p expr with Configuration and Platform
-         *  pre-populated, so instance-method chains like $(Configuration.Length) can be tested. */
         CPPCHECKLIB std::string expandMSBuildProperties(const std::string& expr, const std::string& configuration, const std::string& platform);
+        CPPCHECKLIB std::string resolveVcxitemsFilename(const std::string& items, const std::string& projectDir);
     }
 }
 
@@ -75,6 +72,7 @@ public:
     friend CPPCHECKLIB bool cppcheck::testing::evaluateVcxprojCondition(const std::string &condition, const std::string &configuration, const std::string &platform);
     friend CPPCHECKLIB std::string cppcheck::testing::expandMSBuildExpression(const std::string &expr);
     friend CPPCHECKLIB std::string cppcheck::testing::expandMSBuildProperties(const std::string &expr, const std::string &configuration, const std::string &platform);
+    friend CPPCHECKLIB std::string cppcheck::testing::resolveVcxitemsFilename(const std::string &items, const std::string &projectDir);
 
     enum class Type : std::uint8_t {
         NONE,

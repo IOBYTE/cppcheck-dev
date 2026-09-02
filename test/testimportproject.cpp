@@ -18,12 +18,14 @@
 
 #include "filesettings.h"
 #include "fixture.h"
+#include "helpers.h"
 #include "importproject.h"
 #include "redirect.h"
 #include "settings.h"
 #include "standards.h"
 #include "suppressions.h"
 
+#include <algorithm>
 #include <list>
 #include <sstream>
 #include <stdexcept>
@@ -87,6 +89,9 @@ private:
         TEST_CASE(testCollectArgs7);
         TEST_CASE(testVcxprojConditions);
         TEST_CASE(testMSBuildStaticFunctions);
+        TEST_CASE(testVcxitemsPathResolution);
+        TEST_CASE(testMissingChildImportNonFatal); // missing child imports must not abort the project
+        TEST_CASE(testCurrentToolsVersionFromProps); // "Current" keyword uses VisualStudioVersion property
     }
 
     void setDefines() const {
@@ -102,6 +107,20 @@ private:
         ASSERT_EQUALS("A=1;B=1", fs.defines);
 
         TestImporter::fsSetDefines(fs, "A;;B");
+        ASSERT_EQUALS("A=1;B=1", fs.defines);
+
+        // M-2: %(metadata) tokens at the start of the string must be stripped
+        TestImporter::fsSetDefines(fs, "%(PreprocessorDefinitions)");
+        ASSERT_EQUALS("", fs.defines);
+
+        TestImporter::fsSetDefines(fs, "%(PreprocessorDefinitions);A");
+        ASSERT_EQUALS("A=1", fs.defines);
+
+        TestImporter::fsSetDefines(fs, "%(PreprocessorDefinitions);A;B");
+        ASSERT_EQUALS("A=1;B=1", fs.defines);
+
+        // Leading %(…) followed by a mid-string %(…) — both must be stripped
+        TestImporter::fsSetDefines(fs, "%(PreprocessorDefinitions);A;%(OtherMeta);B");
         ASSERT_EQUALS("A=1;B=1", fs.defines);
     }
 
@@ -903,6 +922,21 @@ private:
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' < '0x0F'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'010' > '9'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
+        // Boolean literals and quoted boolean strings are case-insensitive (H-2)
+        // Unquoted keywords (matchWord is already case-insensitive)
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("true", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("false", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("True", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("False", "", ""));
+        // Quoted boolean strings from property expansion (e.g. <WholeProgramOptimization>true</...>)
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'false'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'TRUE'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'FALSE'", "", ""));
+        // Composition with mixed-case booleans
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' And 'True'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'true' And 'false'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'false' Or 'TRUE'", "", ""));
     }
 
     void testMSBuildStaticFunctions() const {
@@ -1052,6 +1086,103 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([MSBuild]::Add(1, 2)) == '3'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.String]::IsNullOrEmpty('')) == 'True'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("$([System.Math]::Max(10, 5)) == '10'", "", ""));
+    }
+
+    void testVcxitemsPathResolution() const {
+        // importVcxitems must absolutise relative paths relative to ProjectDir,
+        // MSBuild always sets ProjectDir with a trailing slash — use that canonical form.
+        // Path styles differ by platform: Path::isAbsolute requires C:/ on Windows, / on Linux.
+#ifdef _WIN32
+        const std::string projDir    = "C:/proj/";
+        const std::string projSub    = "C:/proj/sub/Shared.vcxitems";
+        const std::string projRoot   = "C:/proj/Shared.vcxitems";
+        const std::string absPath    = "C:/absolute/Shared.vcxitems";
+        const std::string absInput   = "C:/absolute/Shared.vcxitems";
+#else
+        const std::string projDir    = "/proj/";
+        const std::string projSub    = "/proj/sub/Shared.vcxitems";
+        const std::string projRoot   = "/proj/Shared.vcxitems";
+        const std::string absPath    = "/absolute/Shared.vcxitems";
+        const std::string absInput   = "/absolute/Shared.vcxitems";
+#endif
+        // Relative path + ProjectDir → absolutised result
+        ASSERT_EQUALS(projSub,  cppcheck::testing::resolveVcxitemsFilename("sub/Shared.vcxitems", projDir));
+        ASSERT_EQUALS(projRoot, cppcheck::testing::resolveVcxitemsFilename("Shared.vcxitems", projDir));
+
+        // Already-absolute path must pass through unchanged regardless of ProjectDir
+        ASSERT_EQUALS(absPath, cppcheck::testing::resolveVcxitemsFilename(absInput, projDir));
+
+        // No ProjectDir → relative path is returned as-is
+        ASSERT_EQUALS("Shared.vcxitems", cppcheck::testing::resolveVcxitemsFilename("Shared.vcxitems", ""));
+    }
+
+    void testMissingChildImportNonFatal() const {
+        // A .vcxproj that imports a non-existent .props file must still import
+        // successfully.  Before the fix, result > NotResolvable caused errors.emplace_back()
+        // + return false, aborting the whole project.  After the fix it is a debug warning
+        // and the remaining ClCompile items are still collected.
+
+        // Use the current directory (no subdirectory) to avoid ScopedFile throwing
+        // "directory already exists" when the test is re-run without a clean build.
+        const ScopedFile mainCpp("testm3_main.cpp", "");
+        const ScopedFile vcxproj(
+            "testm3.vcxproj",
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<Project DefaultTargets=\"Build\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+            "  <ItemGroup Label=\"ProjectConfigurations\">\n"
+            "    <ProjectConfiguration Include=\"Debug|Win32\">\n"
+            "      <Configuration>Debug</Configuration>\n"
+            "      <Platform>Win32</Platform>\n"
+            "    </ProjectConfiguration>\n"
+            "  </ItemGroup>\n"
+            "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|Win32'\" Label=\"Configuration\">\n"
+            "    <ConfigurationType>Application</ConfigurationType>\n"
+            "    <PlatformToolset>v143</PlatformToolset>\n"
+            "  </PropertyGroup>\n"
+            "  <!-- Import a file that does not exist: fix must not abort import -->\n"
+            "  <Import Project=\"nonexistent_m3_missing.props\" />\n"
+            "  <ItemGroup>\n"
+            "    <ClCompile Include=\"testm3_main.cpp\" />\n"
+            "  </ItemGroup>\n"
+            "</Project>\n");
+
+        ImportProject project;
+        const ImportProject::Type result = project.import(vcxproj.path());
+
+        // Must succeed — missing child imports must not abort the project.
+        ASSERT_EQUALS(static_cast<int>(ImportProject::Type::VS_VCXPROJ), static_cast<int>(result));
+
+        // No hard errors — the missing import is demoted to a debug warning.
+        ASSERT(project.errors.empty());
+
+        // The source file must still have been collected despite the missing import.
+        const bool foundMain = std::any_of(project.fileSettings.begin(), project.fileSettings.end(), [](const FileSettings &fs) {
+            return fs.filename().find("main.cpp") != std::string::npos;
+        });
+        ASSERT(foundMain);
+    }
+
+    void testCurrentToolsVersionFromProps() const {
+        // L-3: "Current" keyword in relational conditions must use VisualStudioVersion
+        // from the properties map rather than a hardcoded major version number.
+        //
+        // evaluateVcxprojCondition uses an empty properties map, so VisualStudioVersion
+        // is absent and the fallback value { 18 } applies.  These assertions verify
+        // the comparison logic is correct for the fallback case; an end-to-end
+        // .vcxproj test with <VisualStudioVersion> set would be needed to exercise
+        // the property-lookup path directly.
+
+        // fallback Current = { 18 } (VS 2026)
+        // Use unambiguous major-version differences to avoid dependence on how
+        // compareVersions handles vectors of different lengths ({18} vs {18,0}).
+        // "Current" > "17.0" -> 18 > 17 -> true
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' > '17.0'", "Debug", "Win32"));
+        // "17.0" < "Current" -> 17 < 18 -> true
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' < 'Current'", "Debug", "Win32"));
+        // "Current" < "19.0" -> 18 < 19 -> true
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' < '19.0'", "Debug", "Win32"));
+        // "Current" > "19.0" -> 18 > 19 -> false
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Current' > '19.0'", "Debug", "Win32"));
     }
 
     // TODO: test fsParseCommand()
