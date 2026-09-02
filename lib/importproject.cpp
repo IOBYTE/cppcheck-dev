@@ -1611,10 +1611,18 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
     debugs.clear();
 
+    // Strip \r so that CRLF .sln files opened in text mode on Linux/macOS
+    // do not leave a trailing \r on every extracted value.
+    const auto stripCR = [](std::string &s) {
+        if (!s.empty() && s.back() == '\r')
+            s.pop_back();
+    };
+
     if (!std::getline(istr,line)) {
         errors.emplace_back("Visual Studio solution file is empty");
         return false;
     }
+    stripCR(line);
 
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
         // Skip BOM
@@ -1622,6 +1630,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
             errors.emplace_back("Visual Studio solution file header not found");
             return false;
         }
+        stripCR(line);
     }
 
     PropertiesMap solutionVariables;
@@ -1637,6 +1646,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     // so that its properties are visible to every project.
     std::vector<std::string> vcxprojs;
     while (std::getline(istr,line)) {
+        stripCR(line);
         if (startsWith(line, "VisualStudioVersion = ")) {
             solutionVariables["VisualStudioVersion"] = line.substr(std::strlen("VisualStudioVersion = "));
             continue;
@@ -1811,9 +1821,24 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
         text == "$(VCTargetsPath)/Microsoft.Cpp.Default.props")
         return;
 
+    // Depth-counting scan so that nested expressions like $(Foo$(Bar)) report
+    // the full name "Foo$(Bar)" rather than truncating at the first ')'.
+    const auto findClosingParen = [&](std::string::size_type start) -> std::string::size_type {
+        int depth = 1;
+        for (std::string::size_type i = start; i < text.size(); ++i) {
+            if (text[i] == '(')
+                ++depth;
+            else if (text[i] == ')') {
+                if (--depth == 0)
+                    return i;
+            }
+        }
+        return std::string::npos;
+    };
+
     std::string::size_type pos = 0;
     while ((pos = text.find("$(", pos)) != std::string::npos) {
-        const std::string::size_type end = text.find(')', pos + 2);
+        const std::string::size_type end = findClosingParen(pos + 2);
         if (end == std::string::npos)
             break;
         const std::string propName = text.substr(pos + 2, end - pos - 2);
@@ -1829,7 +1854,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
     pos = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
-        const std::string::size_type end = text.find(')', pos + 2);
+        const std::string::size_type end = findClosingParen(pos + 2);
         if (end == std::string::npos)
             break;
         std::stringstream message;
@@ -2207,8 +2232,8 @@ private:
         const std::size_t count = std::max(lhs.size(), rhs.size());
 
         for (std::size_t i = 0; i < count; ++i) {
-            // Missing trailing components are treated as -1 (not 0),
-            // so '17' < '17.0' and '1.2.3' < '1.2.3.0'.
+            // Missing trailing components are treated as -1, matching .NET Version semantics:
+            // new Version("17").Minor == -1, so "17" < "17.0" is true in real MSBuild.
             const int l = (i < lhs.size()) ? lhs[i] : -1;
             const int r = (i < rhs.size()) ? rhs[i] : -1;
             if (l < r)
@@ -2743,6 +2768,9 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
         } else if (hasName(e1, "LanguageStandard", properties)) {
             auto &v = compile.metadata["LanguageStandard"];
             v = getMetadata(e1, properties, compile.metadata, v);
+        } else if (hasName(e1, "LanguageStandard_C", properties)) {
+            auto &v = compile.metadata["LanguageStandard_C"];
+            v = getMetadata(e1, properties, compile.metadata, v);
         } else if (hasName(e1, "AdditionalOptions", properties)) {
             auto &v = compile.metadata["AdditionalOptions"];
             v = getMetadata(e1, properties, compile.metadata, v);
@@ -2822,6 +2850,12 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                 compile.metadata["LanguageStandard"] = "stdcpp23";
             } else if (option == "/std:c++latest" || option == "-std=c++latest") {
                 compile.metadata["LanguageStandard"] = "stdcpplatest";
+            } else if (option == "/std:c11" || option == "-std=c11") {
+                compile.metadata["LanguageStandard_C"] = "stdc11";
+            } else if (option == "/std:c17" || option == "-std=c17") {
+                compile.metadata["LanguageStandard_C"] = "stdc17";
+            } else if (option == "/std:clatest" || option == "-std=clatest") {
+                compile.metadata["LanguageStandard_C"] = "stdclatest";
             }
         }
     }
@@ -3606,7 +3640,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
             } else if (pc.platform == ProjectConfiguration::ARM64EC) {
                 // ARM64EC is an x64-ABI on ARM64 hardware (VS 2022+).
                 // MSVC defines _M_ARM64EC and the two x64 macros for this target.
-                fs.platformType = Platform::Type::WinARM64;
+                fs.platformType = Platform::Type::WinARM64EC;
                 fs.defines += ";_WIN64=1";
                 fs.defines += ";_M_ARM64EC=1;_M_X64=100;_M_AMD64=100";
             } else if (pc.platform == ProjectConfiguration::ARM) {
@@ -3615,21 +3649,35 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 fs.defines += ";_M_ARM=7";
             }
 
-            Standards::cppstd_t cppstd = Standards::CPPLatest;
-            const std::string &languageStandard = compile.get("LanguageStandard");
-            if (languageStandard == "stdcpp11")
-                cppstd = Standards::CPP11;
-            else if (languageStandard == "stdcpp14")
-                cppstd = Standards::CPP14;
-            else if (languageStandard == "stdcpp17")
-                cppstd = Standards::CPP17;
-            else if (languageStandard == "stdcpp20")
-                cppstd = Standards::CPP20;
-            else if (languageStandard == "stdcpp23")
-                cppstd = Standards::CPP23;
-            else if (languageStandard == "stdcpplatest")
-                cppstd = Standards::CPPLatest;
-            fs.standard = Standards::getCPP(cppstd);
+            const bool isCFile = Path::getFilenameExtensionInLowerCase(compile.filename) == ".c";
+            if (isCFile) {
+                // C file: use LanguageStandard_C; MSVC defaults to C17 for /TC files.
+                Standards::cstd_t cstd = Standards::C17;
+                const std::string &languageStandardC = compile.get("LanguageStandard_C");
+                if (languageStandardC == "stdc11")
+                    cstd = Standards::C11;
+                else if (languageStandardC == "stdc17")
+                    cstd = Standards::C17;
+                else if (languageStandardC == "stdclatest")
+                    cstd = Standards::CLatest;
+                fs.standard = Standards::getC(cstd);
+            } else {
+                Standards::cppstd_t cppstd = Standards::CPPLatest;
+                const std::string &languageStandard = compile.get("LanguageStandard");
+                if (languageStandard == "stdcpp11")
+                    cppstd = Standards::CPP11;
+                else if (languageStandard == "stdcpp14")
+                    cppstd = Standards::CPP14;
+                else if (languageStandard == "stdcpp17")
+                    cppstd = Standards::CPP17;
+                else if (languageStandard == "stdcpp20")
+                    cppstd = Standards::CPP20;
+                else if (languageStandard == "stdcpp23")
+                    cppstd = Standards::CPP23;
+                else if (languageStandard == "stdcpplatest")
+                    cppstd = Standards::CPPLatest;
+                fs.standard = Standards::getCPP(cppstd);
+            }
 
             std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
             if (enableEnhancedInstructionSet == "StreamingSIMDExtensions")
@@ -4215,11 +4263,14 @@ void ImportProject::selectOneVsConfig(Platform::Type platform)
             remove = true;
         else if (platform == Platform::Type::WinARM64 && fs.platformType != Platform::Type::WinARM64)
             remove = true;
+        else if (platform == Platform::Type::WinARM64EC && fs.platformType != Platform::Type::WinARM64EC)
+            remove = true;
         else if (platform == Platform::Type::WinARM && fs.platformType != Platform::Type::WinARM)
             remove = true;
         else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) &&
                  (fs.platformType == Platform::Type::Win64 ||
                   fs.platformType == Platform::Type::WinARM64 ||
+                  fs.platformType == Platform::Type::WinARM64EC ||
                   fs.platformType == Platform::Type::WinARM))
             remove = true;
         else if (filenames.find(fs.filename()) != filenames.end())
@@ -4249,11 +4300,14 @@ void ImportProject::selectVsConfigurations(Platform::Type platform, const std::v
             remove = true;
         else if (platform == Platform::Type::WinARM64 && fs.platformType != Platform::Type::WinARM64)
             remove = true;
+        else if (platform == Platform::Type::WinARM64EC && fs.platformType != Platform::Type::WinARM64EC)
+            remove = true;
         else if (platform == Platform::Type::WinARM && fs.platformType != Platform::Type::WinARM)
             remove = true;
         else if ((platform == Platform::Type::Win32A || platform == Platform::Type::Win32W) &&
                  (fs.platformType == Platform::Type::Win64 ||
                   fs.platformType == Platform::Type::WinARM64 ||
+                  fs.platformType == Platform::Type::WinARM64EC ||
                   fs.platformType == Platform::Type::WinARM))
             remove = true;
         if (remove) {
