@@ -1938,17 +1938,29 @@ public:
         return (i < mComponents.size()) ? mComponents[i] : -1;
     }
 
-    bool operator==(const MSBuildVersion &rhs) const { return cmp(rhs) == 0; }
-    bool operator!=(const MSBuildVersion &rhs) const { return cmp(rhs) != 0; }
-    bool operator< (const MSBuildVersion &rhs) const { return cmp(rhs) <  0; }
-    bool operator> (const MSBuildVersion &rhs) const { return cmp(rhs) >  0; }
-    bool operator<=(const MSBuildVersion &rhs) const { return cmp(rhs) <= 0; }
-    bool operator>=(const MSBuildVersion &rhs) const { return cmp(rhs) >= 0; }
+    bool operator==(const MSBuildVersion &rhs) const {
+        return cmp(rhs) == 0;
+    }
+    bool operator!=(const MSBuildVersion &rhs) const {
+        return cmp(rhs) != 0;
+    }
+    bool operator< (const MSBuildVersion &rhs) const {
+        return cmp(rhs) <  0;
+    }
+    bool operator> (const MSBuildVersion &rhs) const {
+        return cmp(rhs) >  0;
+    }
+    bool operator<=(const MSBuildVersion &rhs) const {
+        return cmp(rhs) <= 0;
+    }
+    bool operator>=(const MSBuildVersion &rhs) const {
+        return cmp(rhs) >= 0;
+    }
 
     /** Apply an MSBuild relational operator string ("<", ">", "<=", ">="). */
     bool compareOp(const std::string &op, const MSBuildVersion &rhs) const {
-        if (op == "<")  return *this <  rhs;
-        if (op == ">")  return *this >  rhs;
+        if (op == "<") return *this <  rhs;
+        if (op == ">") return *this >  rhs;
         if (op == "<=") return *this <= rhs;
         if (op == ">=") return *this >= rhs;
         return false;
@@ -1973,7 +1985,7 @@ private:
             const int l = component(i);
             const int r = rhs.component(i);
             if (l < r) return -1;
-            if (l > r) return  1;
+            if (l > r) return 1;
         }
         return 0;
     }
@@ -2380,8 +2392,8 @@ private:
         long lhsInt = 0;
         long rhsInt = 0;
         if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
-            if (op == "<")  return lhsInt <  rhsInt;
-            if (op == ">")  return lhsInt >  rhsInt;
+            if (op == "<") return lhsInt <  rhsInt;
+            if (op == ">") return lhsInt >  rhsInt;
             if (op == "<=") return lhsInt <= rhsInt;
             if (op == ">=") return lhsInt >= rhsInt;
         }
