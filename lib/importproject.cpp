@@ -1563,6 +1563,15 @@ bool ImportProject::importCompileCommands(std::istream &istr)
     return true;
 }
 
+/// Return the stem of \p filename (basename with its final extension removed).
+/// Strips only the tail extension so "foo.targets.props" → "foo.targets", not "foo".
+static std::string fileStem(const std::string &filename) {
+    const std::string ext = Path::getFilenameExtension(filename);
+    if (ext.empty() || filename.size() <= ext.size())
+        return filename;
+    return filename.substr(0, filename.size() - ext.size());
+}
+
 void ImportProject::setSolution(const std::string &filename, PropertiesMap &properties) {
     const std::string absolutePath = toAbsolute(filename);
     properties["SolutionDir"] = Path::getPathFromFilename(absolutePath);
@@ -1574,14 +1583,13 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     const auto slash = absolutePath.rfind('/');
     properties["SolutionFileName"] = (slash != std::string::npos) ? absolutePath.substr(slash + 1) : absolutePath;
 
-    std::string temp = properties["SolutionFileName"];
-    findAndReplace(temp, Path::getFilenameExtension(temp), "");
-    properties["SolutionName"] = temp;
+    properties["SolutionName"] = fileStem(properties["SolutionFileName"]);
 }
 
 bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
 {
-    const std::string directorySolutionProps = findFile(properties["ProjectDir"], "Directory.Solution.props");
+    // Directory.Solution.props lives beside the .sln file, so search from SolutionDir upward.
+    const std::string directorySolutionProps = findFile(properties["SolutionDir"], "Directory.Solution.props");
     if (!directorySolutionProps.empty()) {
         MetadataMap data;
         std::unordered_set<std::string> stack;
@@ -1623,7 +1631,11 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
     const std::string solutionDir = solutionVariables["SolutionDir"];
 
-    bool found = false;
+    // First pass: parse the solution file to collect the header properties and the list of
+    // vcxproj paths.  Directory.Solution.props must be imported after VisualStudioVersion is
+    // known (it appears before all Project(...) lines) but before any vcxproj is processed,
+    // so that its properties are visible to every project.
+    std::vector<std::string> vcxprojs;
     while (std::getline(istr,line)) {
         if (startsWith(line, "VisualStudioVersion = ")) {
             solutionVariables["VisualStudioVersion"] = line.substr(std::strlen("VisualStudioVersion = "));
@@ -1645,21 +1657,28 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         vcxproj = Path::toNativeSeparators(std::move(vcxproj));
         vcxproj = toAbsolute(vcxproj, solutionDir, solutionVariables);
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
+        vcxprojs.push_back(std::move(vcxproj));
+    }
 
+    if (vcxprojs.empty()) {
+        errors.emplace_back("no projects found in Visual Studio solution file");
+        return false;
+    }
+
+    // Import Directory.Solution.props into solutionVariables before processing any project,
+    // so every importVcxproj call inherits the solution-scope properties.
+    if (!importDirectorySolutionProps(solutionVariables))
+        return false;
+
+    for (const std::string &vcxproj : vcxprojs) {
         mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
             errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
             return false;
         }
-        found = true;
     }
 
-    if (!found) {
-        errors.emplace_back("no projects found in Visual Studio solution file");
-        return false;
-    }
-
-    return importDirectorySolutionProps(mVariables);
+    return true;
 }
 
 bool ImportProject::importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters)
@@ -1689,6 +1708,11 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     setSolution(filename, solutionVariables);
 
     solutionVariables["VisualStudioVersion"] = "18.0";
+
+    // Import Directory.Solution.props before processing any project so that its
+    // properties are visible to every importVcxproj call via solutionVariables.
+    if (!importDirectorySolutionProps(solutionVariables))
+        return false;
 
     bool found = false;
 
@@ -1747,7 +1771,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
         return false;
     }
 
-    return importDirectorySolutionProps(mVariables);
+    return true;
 }
 
 ImportProject::ProjectConfiguration::ProjectConfiguration(const tinyxml2::XMLElement *cfg) {
@@ -1769,6 +1793,8 @@ ImportProject::ProjectConfiguration::ProjectConfiguration(const tinyxml2::XMLEle
                 platform = x64;
             else if (platformStr == "ARM64")
                 platform = ARM64;
+            else if (platformStr == "ARM64EC")
+                platform = ARM64EC;
             else if (platformStr == "ARM")
                 platform = ARM;
             else
@@ -2374,15 +2400,6 @@ namespace {
     std::string fileBasename(const std::string &path) {
         const auto pos = path.rfind('/');
         return (pos != std::string::npos) ? path.substr(pos + 1) : path;
-    }
-
-    /// Return the stem of \p filename (basename with its final extension removed).
-    /// Strips only the tail extension so "foo.targets.props" → "foo.targets", not "foo".
-    std::string fileStem(const std::string &filename) {
-        const std::string ext = Path::getFilenameExtension(filename);
-        if (ext.empty() || filename.size() <= ext.size())
-            return filename;
-        return filename.substr(0, filename.size() - ext.size());
     }
 
     /// Return \p path with its root component stripped.
@@ -3574,17 +3591,28 @@ bool ImportProject::importVcxproj(const std::string &filename,
             // TODO: detect actual MSC version
             fs.msc = true;
             fs.defines = "_WIN32=1";
-            if (pc.platform == ProjectConfiguration::Win32)
+            if (pc.platform == ProjectConfiguration::Win32) {
                 fs.platformType = Platform::Type::Win32W;
-            else if (pc.platform == ProjectConfiguration::x64) {
+                // MSVC always defines _M_IX86 for x86 targets; 600 = Pentium Pro / modern default.
+                fs.defines += ";_M_IX86=600";
+            } else if (pc.platform == ProjectConfiguration::x64) {
                 fs.platformType = Platform::Type::Win64;
                 fs.defines += ";_WIN64=1";
+                // MSVC defines both _M_X64 and _M_AMD64 (both == 100) for x64 targets.
+                fs.defines += ";_M_X64=100;_M_AMD64=100";
             } else if (pc.platform == ProjectConfiguration::ARM64) {
                 fs.platformType = Platform::Type::WinARM64;
                 fs.defines += ";_M_ARM64=1";
+            } else if (pc.platform == ProjectConfiguration::ARM64EC) {
+                // ARM64EC is an x64-ABI on ARM64 hardware (VS 2022+).
+                // MSVC defines _M_ARM64EC and the two x64 macros for this target.
+                fs.platformType = Platform::Type::WinARM64;
+                fs.defines += ";_WIN64=1";
+                fs.defines += ";_M_ARM64EC=1;_M_X64=100;_M_AMD64=100";
             } else if (pc.platform == ProjectConfiguration::ARM) {
                 fs.platformType = Platform::Type::WinARM;
-                fs.defines += ";_M_ARM=1";
+                // MSVC defines _M_ARM=7 (Thumb-2 instruction set) for ARM targets.
+                fs.defines += ";_M_ARM=7";
             }
 
             Standards::cppstd_t cppstd = Standards::CPPLatest;
