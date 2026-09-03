@@ -667,7 +667,7 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
             parts.push_back(s.substr(0, shareEnd)); // "//server/share"
             pos = shareEnd + 1;
         } else if (s.size() >= 2 &&
-            std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
+                   std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
             // Drive-letter path: root is the two-character drive token "C:".
             parts.push_back(s.substr(0, 2));
             pos = 2;
@@ -716,7 +716,7 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
         // Find the length of the common component prefix.
         std::size_t common = 0;
         while (common < absParts.size() && common < baseParts_.size() &&
-            Path::sameFileName(absParts[common], baseParts_[common]))
+               Path::sameFileName(absParts[common], baseParts_[common]))
             ++common;
 
         if (common == 0)
@@ -3035,57 +3035,57 @@ static void applyAdditionalOptions(MetadataMap &metadata)
         args.emplace_back(std::move(arg));
 
     for (std::size_t i = 0; i < args.size(); ++i) {
-            const std::string &option = args[i];
+        const std::string &option = args[i];
 
-            if (option.size() >= 2 &&
-                (option[0] == '/' || option[0] == '-') &&
-                (option[1] == 'D' || option[1] == 'd')) {
+        if (option.size() >= 2 &&
+            (option[0] == '/' || option[0] == '-') &&
+            (option[1] == 'D' || option[1] == 'd')) {
 
-                std::string define = option.substr(2);
+            std::string define = option.substr(2);
 
-                // /D NAME
-                if (define.empty() && i + 1 < args.size())
-                    define = args[++i];
+            // /D NAME
+            if (define.empty() && i + 1 < args.size())
+                define = args[++i];
 
-                if (!define.empty()) {
-                    if (!metadata["PreprocessorDefinitions"].empty())
-                        metadata["PreprocessorDefinitions"] += ';';
-                    metadata["PreprocessorDefinitions"] += define;
-                }
+            if (!define.empty()) {
+                if (!metadata["PreprocessorDefinitions"].empty())
+                    metadata["PreprocessorDefinitions"] += ';';
+                metadata["PreprocessorDefinitions"] += define;
+            }
 
-            } else if (option.size() >= 2 &&
-                (option[0] == '/' || option[0] == '-') &&
-                (option[1] == 'I' || option[1] == 'i')) {
+        } else if (option.size() >= 2 &&
+                   (option[0] == '/' || option[0] == '-') &&
+                   (option[1] == 'I' || option[1] == 'i')) {
 
-                std::string path = option.substr(2);
+            std::string path = option.substr(2);
 
-                // /I path
-                if (path.empty() && i + 1 < args.size())
-                    path = args[++i];
+            // /I path
+            if (path.empty() && i + 1 < args.size())
+                path = args[++i];
 
-                if (!path.empty()) {
-                    if (!metadata["AdditionalIncludeDirectories"].empty())
-                        metadata["AdditionalIncludeDirectories"] += ';';
-                    metadata["AdditionalIncludeDirectories"] += path;
-                }
-            } else if (option == "/std:c++11" || option == "-std=c++11") {
-                metadata["LanguageStandard"] = "stdcpp11";
-            } else if (option == "/std:c++14" || option == "-std=c++14") {
-                metadata["LanguageStandard"] = "stdcpp14";
-            } else if (option == "/std:c++17" || option == "-std=c++17") {
-                metadata["LanguageStandard"] = "stdcpp17";
-            } else if (option == "/std:c++20" || option == "-std=c++20") {
-                metadata["LanguageStandard"] = "stdcpp20";
-            } else if (option == "/std:c++23" || option == "-std=c++23") {
-                metadata["LanguageStandard"] = "stdcpp23";
-            } else if (option == "/std:c++latest" || option == "-std=c++latest") {
-                metadata["LanguageStandard"] = "stdcpplatest";
-            } else if (option == "/std:c11" || option == "-std=c11") {
-                metadata["LanguageStandard_C"] = "stdc11";
-            } else if (option == "/std:c17" || option == "-std=c17") {
-                metadata["LanguageStandard_C"] = "stdc17";
-            } else if (option == "/std:clatest" || option == "-std=clatest") {
-                metadata["LanguageStandard_C"] = "stdclatest";
+            if (!path.empty()) {
+                if (!metadata["AdditionalIncludeDirectories"].empty())
+                    metadata["AdditionalIncludeDirectories"] += ';';
+                metadata["AdditionalIncludeDirectories"] += path;
+            }
+        } else if (option == "/std:c++11" || option == "-std=c++11") {
+            metadata["LanguageStandard"] = "stdcpp11";
+        } else if (option == "/std:c++14" || option == "-std=c++14") {
+            metadata["LanguageStandard"] = "stdcpp14";
+        } else if (option == "/std:c++17" || option == "-std=c++17") {
+            metadata["LanguageStandard"] = "stdcpp17";
+        } else if (option == "/std:c++20" || option == "-std=c++20") {
+            metadata["LanguageStandard"] = "stdcpp20";
+        } else if (option == "/std:c++23" || option == "-std=c++23") {
+            metadata["LanguageStandard"] = "stdcpp23";
+        } else if (option == "/std:c++latest" || option == "-std=c++latest") {
+            metadata["LanguageStandard"] = "stdcpplatest";
+        } else if (option == "/std:c11" || option == "-std=c11") {
+            metadata["LanguageStandard_C"] = "stdc11";
+        } else if (option == "/std:c17" || option == "-std=c17") {
+            metadata["LanguageStandard_C"] = "stdc17";
+        } else if (option == "/std:clatest" || option == "-std=clatest") {
+            metadata["LanguageStandard_C"] = "stdclatest";
         }
     }
 }
