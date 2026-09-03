@@ -255,30 +255,6 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
-// Performs a case-insensitive substring search matching MSBuild string property behavior.
-static bool containsCaseInsensitive(const std::string &haystack, const std::string &needle)
-{
-    if (needle.empty())
-        return true;
-    if (needle.size() > haystack.size())
-        return false;
-
-    const std::size_t maxPos = haystack.size() - needle.size();
-    for (std::size_t i = 0; i <= maxPos; ++i) {
-        std::size_t j = 0;
-        for (; j < needle.size(); ++j) {
-            if (std::toupper(static_cast<unsigned char>(haystack[i + j])) !=
-                std::toupper(static_cast<unsigned char>(needle[j]))) {
-                break;
-            }
-        }
-        if (j == needle.size()) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // Find the ')' that matches the '(' at position parenPos.
 // Tracks depth for every '(' and ')', not just '$(' pairs: bare parentheses
 // inside static-function argument lists (e.g. Pow(2,3), Format(...)) must
@@ -326,34 +302,26 @@ static std::string applyPropertyMethod(std::string value,
     if (caseInsensitiveStringCompare(method, "Contains") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("Contains requires one argument");
-        return containsCaseInsensitive(value, args[0]) ? "True" : "False";
+        // .NET String.Contains is case-sensitive by default
+        return value.find(args[0]) != std::string::npos ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "StartsWith") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("StartsWith requires one argument");
+        // .NET String.StartsWith is case-sensitive by default
         if (args[0].size() > value.size())
             return "False";
-        for (std::size_t i = 0; i < args[0].size(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(value[i])) !=
-                std::tolower(static_cast<unsigned char>(args[0][i])))
-                return "False";
-        }
-        return "True";
+        return value.compare(0, args[0].size(), args[0]) == 0 ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "EndsWith") == 0) {
         if (args.size() != 1)
             throw std::runtime_error("EndsWith requires one argument");
+        // .NET String.EndsWith is case-sensitive by default
         if (args[0].size() > value.size())
             return "False";
-        const std::size_t offset = value.size() - args[0].size();
-        for (std::size_t i = 0; i < args[0].size(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(value[offset + i])) !=
-                std::tolower(static_cast<unsigned char>(args[0][i])))
-                return "False";
-        }
-        return "True";
+        return value.compare(value.size() - args[0].size(), args[0].size(), args[0]) == 0 ? "True" : "False";
     }
 
     if (caseInsensitiveStringCompare(method, "Trim") == 0) {
@@ -574,7 +542,11 @@ static void pathCombineAppend(std::string &result, const std::string &seg,
             result = seg;
         break;
     case PathKind::DriveRelative: {
-        // Strip drive prefix, join remainder as relative.
+        // Drive-relative path (e.g. C:foo): on Windows this is relative to the CWD
+        // of that specific drive.  We have no per-drive CWD available, so we strip
+        // the drive letter and join the remainder as a regular relative segment.
+        // This is the best approximation possible in a cross-platform context and
+        // is sufficient for the MSBuild property-sheet files encountered in practice.
         const std::string rel = seg.substr(2);
         if (!rel.empty()) {
             if (!result.empty() && result.back() != '/' && result.back() != '\\')
@@ -896,10 +868,11 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             return findFile(startDir, args[0]);
         }
 
-        // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) -- join segments (Path.Combine
-        // semantics: an absolute segment resets the accumulated path), normalize \ to /,
-        // and resolve . and .. components.  The result is absolute only when the first
-        // evaluated segment is itself absolute; relative inputs stay relative.
+        // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) -- join segments, normalize
+        // \ to /, and resolve . and .. components.  Internally MSBuild calls
+        // Path.GetFullPath(Path.Combine(paths)), so multi-segment joining follows
+        // System.IO.Path.Combine semantics: an absolute segment resets the accumulated
+        // path (including the Path::isAbsolute host-delegate check).
         if (caseInsensitiveStringCompare(member, "NormalizePath") == 0) {
             if (args.empty()) {
                 debugs.emplace_back("NormalizePath: called with no arguments");
@@ -917,7 +890,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             }
             std::string result = args[0];
             for (std::size_t i = 1; i < args.size(); ++i)
-                pathCombineAppend(result, args[i]);
+                pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true);
             // Delegate separator normalization and . / .. resolution to the
             // central Path utilities so all path handling stays consistent.
             return Path::simplifyPath(Path::fromNativeSeparators(result));
@@ -1751,8 +1724,10 @@ bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
         std::list<ProjectConfiguration> projectConfigurationList;
         std::list<ItemGroupClCompile> compileList;
         const ImportResult result = importPropsOrTargets(directorySolutionProps, properties, data, compileList, projectConfigurationList, stack);
-        if (result > ImportResult::NotResolvable)
+        if (result > ImportResult::NotResolvable) {
             debugs.emplace_back("Could not fully import \"" + directorySolutionProps + "\" - " + importResultStr(result) + " (continuing)");
+            return false;
+        }
     }
     return true;
 }
@@ -1777,14 +1752,22 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     }
     stripCR(line);
 
-    // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.  Visual Studio writes it as a
-    // 3-byte prefix on the first content line, not on a line of its own, so we
-    // remove the bytes here rather than skipping to a second line.
+    // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.  Visual Studio may write it
+    // either on the same line as the header or on its own line before it (BOM + CRLF).
+    // In the latter case stripping the BOM leaves an empty line; read one more line.
     if (line.size() >= 3 &&
         static_cast<unsigned char>(line[0]) == 0xEF &&
         static_cast<unsigned char>(line[1]) == 0xBB &&
         static_cast<unsigned char>(line[2]) == 0xBF)
         line.erase(0, 3);
+
+    if (line.empty()) {
+        if (!std::getline(istr, line)) {
+            errors.emplace_back("Visual Studio solution file header not found");
+            return false;
+        }
+        stripCR(line);
+    }
 
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
         errors.emplace_back("Visual Studio solution file header not found");
@@ -2336,8 +2319,21 @@ private:
              mPos + 1 < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos + 1])))) {
             const std::size_t begin = mPos++;
 
-            while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
-                ++mPos;
+            // Skip leading '-' when checking for hex prefix.
+            const std::size_t digitStart = mPos;
+            // Hex literal: ([-]?)0x<hexdigits> or ([-]?)0X<hexdigits>
+            if (mCondition[digitStart] == '0' &&
+                digitStart + 1 < mCondition.size() &&
+                (mCondition[digitStart + 1] == 'x' || mCondition[digitStart + 1] == 'X') &&
+                digitStart + 2 < mCondition.size() &&
+                std::isxdigit(static_cast<unsigned char>(mCondition[digitStart + 2]))) {
+                mPos = digitStart + 2;  // skip '0x'/'0X'
+                while (mPos < mCondition.size() && std::isxdigit(static_cast<unsigned char>(mCondition[mPos])))
+                    ++mPos;
+            } else {
+                while (mPos < mCondition.size() && std::isdigit(static_cast<unsigned char>(mCondition[mPos])))
+                    ++mPos;
+            }
 
             return mCondition.substr(begin, mPos - begin);
         }
@@ -2932,10 +2928,12 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
 
 std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original) {
     const char *eName = node->Name();
-    const char *eText = node->GetText();
-    if (!eName || !eText || !conditionIsTrue(node, properties))
+    if (!eName || !conditionIsTrue(node, properties))
         return original;
-    std::string text(eText);
+    // An explicitly empty element (<AdditionalOptions/>) is a meaningful assignment
+    // to ""; do NOT treat GetText()==nullptr as "no change".
+    const char *eText = node->GetText();
+    std::string text(eText ? eText : "");
     trimWhitespace(text);
     text = Path::fromNativeSeparators(std::move(text));
     const std::string metaSelfRef = "%(" + std::string(eName) + ")";
@@ -3008,14 +3006,15 @@ void ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
                                         MetadataMap &metadata)
 {
     const char *text = e1->GetText();
-    if (!text)
-        return;
     if (hasName(e1, "ExcludedFromBuild", properties)) {
-        std::string val(text);
+        std::string val(text ? text : "");
+        trimWhitespace(val);
         expandMSBuildVariables(val, properties);
         metadata["ExcludedFromBuild"] = std::move(val);
         return;
     }
+    if (!text)
+        return;
     static const char *const METADATA_KEYS[] = {
         "AdditionalIncludeDirectories",
         "ForcedIncludeFiles",
@@ -3128,6 +3127,7 @@ std::vector<std::string> ImportProject::expandItemSpecFiles(const std::string &s
     std::vector<std::string> files;
     files.reserve(specs.size());
     for (const std::pair<std::string, std::string> &p : specs)
+        // cppcheck-suppress useStlAlgorithm
         files.push_back(p.second);
     return files;
 }
@@ -3201,7 +3201,7 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
                     trimmed.find('?') != std::string::npos) {
                     debugs.emplace_back("ClCompile item glob not supported, skipped: '" + trimmed + "'");
                 } else {
-                    result.emplace_back(std::make_pair(trimmed, toAbsolute(trimmed, projectDir, properties)));
+                    result.emplace_back(trimmed, toAbsolute(trimmed, projectDir, properties));
                 }
             }
             seg.clear();
@@ -3278,11 +3278,19 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
             compile.metadata["Filename"] = stem;
             compile.metadata["Extension"] = ext;
             compile.metadata["Directory"] = directory;
-            compile.metadata["RecursiveDir"] = std::string(); // empty: no wildcard was used
-            // %(RelativeDir) is the directory of the original item spec as written
-            // (after property expansion, before toAbsolute()), normalized to forward
-            // slashes and including the trailing separator.  This differs from
-            // %(Directory), which is relative to the drive/UNC root.
+            // %(RecursiveDir) is the portion of the path matched by a ** wildcard.
+            // The importer does not expand glob specs (they are skipped with a
+            // diagnostic above), so this metadata is always empty here.  If wildcard
+            // expansion were ever added, %(RecursiveDir) and %(RelativeDir) would
+            // both need to be derived from the matched filesystem path, not from the
+            // original spec string.
+            compile.metadata["RecursiveDir"] = std::string();
+            // %(RelativeDir) is the directory portion of the item spec as originally
+            // written (after property expansion, before toAbsolute()), normalised to
+            // forward slashes with a trailing separator.  For explicit (non-glob)
+            // includes this matches MSBuild's behaviour; for glob items it would
+            // instead need to be computed from the matched path, but those are never
+            // reached here.
             {
                 const std::string origNorm = Path::fromNativeSeparators(spec.first);
                 const std::size_t relSlash = origNorm.rfind('/');
@@ -3551,15 +3559,29 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     // detect circular property sheet imports (A imports B, B imports A, a file importing
     // itself, ...) instead of recursing until the stack overflows - mirrors MSBuild's own
     // import-cycle detection, which errors out rather than looping forever
-    const std::string simplifiedFilename = Path::simplifyPath(filename);
+    // Normalize to lowercase so that NTFS case variants (Foo.props vs foo.props) are
+    // treated as the same file - mirrors MSBuild's own case-insensitive cycle detection.
+    std::string simplifiedFilename = Path::simplifyPath(filename);
+    std::transform(simplifiedFilename.begin(), simplifiedFilename.end(), simplifiedFilename.begin(),
+                   [](unsigned char c) {
+        return std::tolower(c);
+    });
     if (!importStack.insert(simplifiedFilename).second)
         return ImportResult::Cycle;
 
     ImportStackGuard guard(importStack, simplifiedFilename);  // erases on any exit from here
 
     tinyxml2::XMLDocument doc;
-    if (doc.LoadFile(filename.c_str()) != tinyxml2::XML_SUCCESS)
-        return ImportResult::NotFound;
+    {
+        const tinyxml2::XMLError xmlErr = doc.LoadFile(filename.c_str());
+        if (xmlErr != tinyxml2::XML_SUCCESS) {
+            if (xmlErr == tinyxml2::XML_ERROR_FILE_NOT_FOUND ||
+                xmlErr == tinyxml2::XML_ERROR_FILE_COULD_NOT_BE_OPENED ||
+                xmlErr == tinyxml2::XML_ERROR_FILE_READ_ERROR)
+                return ImportResult::NotFound;
+            return ImportResult::NotValid;  // file exists but is malformed XML
+        }
+    }
 
     const tinyxml2::XMLElement * const rootnode = doc.FirstChildElement();
     if (rootnode == nullptr)
@@ -3680,16 +3702,28 @@ ImportProject::ImportResult ImportProject::importVcxitems(const std::string &ite
     if (!Path::isAbsolute(filename) && properties.count("ProjectDir") > 0)
         filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
 
-    const std::string simplifiedFilename = Path::simplifyPath(filename);
+    // Normalize to lowercase so that NTFS case variants are treated as the same file.
+    std::string simplifiedFilename = Path::simplifyPath(filename);
+    std::transform(simplifiedFilename.begin(), simplifiedFilename.end(), simplifiedFilename.begin(),
+                   [](unsigned char c) {
+        return std::tolower(c);
+    });
     if (!importStack.insert(simplifiedFilename).second)
         return ImportResult::Cycle;
 
     ImportStackGuard guard(importStack, simplifiedFilename);  // erases on any exit from here
 
     tinyxml2::XMLDocument doc;
-    const tinyxml2::XMLError error = doc.LoadFile(filename.c_str());
-    if (error != tinyxml2::XML_SUCCESS)
-        return ImportResult::NotFound;
+    {
+        const tinyxml2::XMLError xmlErr = doc.LoadFile(filename.c_str());
+        if (xmlErr != tinyxml2::XML_SUCCESS) {
+            if (xmlErr == tinyxml2::XML_ERROR_FILE_NOT_FOUND ||
+                xmlErr == tinyxml2::XML_ERROR_FILE_COULD_NOT_BE_OPENED ||
+                xmlErr == tinyxml2::XML_ERROR_FILE_READ_ERROR)
+                return ImportResult::NotFound;
+            return ImportResult::NotValid;  // file exists but is malformed XML
+        }
+    }
 
     const tinyxml2::XMLElement *const rootnode = doc.FirstChildElement();
     if (rootnode == nullptr)
@@ -4108,7 +4142,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
 
             FileSettings fs{ compile.filename, Standards::Language::None, 0 }; // file will be identified later on
             fs.cfg = pc.name;
-            // TODO: detect actual MSC version
             fs.msc = true;
             fs.defines = "_WIN32=1";
             if (pc.platform == ProjectConfiguration::Win32) {
@@ -4164,6 +4197,96 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 else if (languageStandard == "stdcpplatest")
                     cppstd = Standards::CPPLatest;
                 fs.standard = Standards::getCPP(cppstd);
+            }
+
+            // Inject _MSC_VER and _MSC_FULL_VER derived from PlatformToolset.
+            // Without these, standard-library and Windows SDK headers (<yvals.h>,
+            // <crtdefs.h>) use generic fallbacks, fail to compile, or misidentify
+            // the supported language standard.
+            {
+                std::string mscVer    = "1940";      // VS 2025/2026 fallback
+                std::string mscFullVer = "194000000";
+
+                // Prefer item-level override, then project property, then DefaultPlatformToolset.
+                std::string toolset = compile.get("PlatformToolset");
+                if (toolset.empty()) {
+                    const auto tsIt = properties.find("PlatformToolset");
+                    if (tsIt != properties.end())
+                        toolset = tsIt->second;
+                    else {
+                        const auto defIt = properties.find("DefaultPlatformToolset");
+                        if (defIt != properties.end())
+                            toolset = defIt->second;
+                    }
+                }
+
+                if (toolset == "v145") {         // VS 2026
+                    mscVer = "1950"; mscFullVer = "195000000";
+                } else if (toolset == "v144") { // VS 2025
+                    mscVer = "1940"; mscFullVer = "194000000";
+                } else if (toolset == "v143") { // VS 2022
+                    mscVer = "1930"; mscFullVer = "193000000";
+                } else if (toolset == "v142") { // VS 2019
+                    mscVer = "1920"; mscFullVer = "192000000";
+                } else if (toolset == "v141") { // VS 2017
+                    mscVer = "1910"; mscFullVer = "191000000";
+                } else if (toolset == "v140") { // VS 2015
+                    mscVer = "1900"; mscFullVer = "190000000";
+                } else if (startsWith(toolset, "v14")) {
+                    // v146+ (future): last digit of toolset suffix * 10.
+                    // e.g. "v146" -> substr(3)="6" -> 1900+60=1960.
+                    try {
+                        const int sub = std::stoi(toolset.substr(3));
+                        mscVer    = std::to_string(1900 + sub * 10);
+                        mscFullVer = mscVer + "00000";
+                    } catch (...) {}
+                } else {
+                    // Unknown or absent toolset: derive from VisualStudioVersion.
+                    const auto vsIt = properties.find("VisualStudioVersion");
+                    if (vsIt != properties.end()) {
+                        try {
+                            const double vsVer = std::stod(vsIt->second);
+                            if (vsVer >= 19.0) {
+                                // future VS: keep the default (1940) as a safe floor
+                            } else if (vsVer >= 18.0) { // VS 2026
+                                mscVer = "1950"; mscFullVer = "195000000";
+                            } else if (vsVer >= 17.0) { // VS 2025
+                                mscVer = "1940"; mscFullVer = "194000000";
+                            } else if (vsVer >= 16.0) { // VS 2022
+                                mscVer = "1930"; mscFullVer = "193000000";
+                            } else if (vsVer >= 15.0) { // VS 2019
+                                mscVer = "1920"; mscFullVer = "192000000";
+                            } else if (vsVer >= 14.0) { // VS 2017
+                                mscVer = "1910"; mscFullVer = "191000000";
+                            }
+                        } catch (...) {}
+                    }
+                }
+
+                fs.defines += ";_MSC_VER=" + mscVer + ";_MSC_FULL_VER=" + mscFullVer;
+            }
+
+            // _MSVC_LANG mirrors the C++ standard flag.  MSVC only defines this for
+            // C++ translation units; C files do not get it (even with /TC).
+            // Note: MSVC does NOT set __cplusplus to the standard value unless
+            // /Zc:__cplusplus is passed; code that needs the standard should test
+            // _MSVC_LANG, which is always set correctly.
+            if (!isCFile) {
+                std::string msvcLang = "201402L"; // MSVC default when no /std: flag is set
+                const std::string &languageStandard = compile.get("LanguageStandard");
+                if (languageStandard == "stdcpp11")
+                    msvcLang = "201103L";
+                else if (languageStandard == "stdcpp14")
+                    msvcLang = "201402L";
+                else if (languageStandard == "stdcpp17")
+                    msvcLang = "201703L";
+                else if (languageStandard == "stdcpp20")
+                    msvcLang = "202002L";
+                else if (languageStandard == "stdcpp23")
+                    msvcLang = "202302L";
+                else if (languageStandard == "stdcpplatest")
+                    msvcLang = "202604L"; // current C++26 draft baseline
+                fs.defines += ";_MSVC_LANG=" + msvcLang;
             }
 
             std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
