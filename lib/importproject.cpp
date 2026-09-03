@@ -647,6 +647,7 @@ static bool isPathRooted(const std::string &filename) {
     case PathKind::UNC:
     case PathKind::DriveAbsolute:
     case PathKind::RootRelative:
+    case PathKind::DriveRelative: // "C:foo" -- Path.IsPathRooted returns true on Windows
         return true;
     default:
         return false;
@@ -908,8 +909,12 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 }
             }
             std::string result = args[0];
-            for (std::size_t i = 1; i < args.size(); ++i)
-                pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true);
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                if (!pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true)) {
+                    debugs.emplace_back("NormalizePath: could not combine path segments");
+                    return "";
+                }
+            }
             // Delegate separator normalization and . / .. resolution to the
             // central Path utilities so all path handling stays consistent.
             return Path::simplifyPath(Path::fromNativeSeparators(result));
@@ -1042,23 +1047,51 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         }
         if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
             std::string result = args[0];
-            for (std::size_t i = 1; i < args.size(); ++i)
-                pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true);
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                if (!pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true)) {
+                    debugs.emplace_back("Path.Combine: could not combine path segments");
+                    return "";
+                }
+            }
             return result;
         }
         if (args.size() == 2) {
             if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
                 const std::string path = Path::fromNativeSeparators(args[0]);
                 const std::string basePath = Path::fromNativeSeparators(args[1]);
-                if (Path::isAbsolute(path))
-                    return Path::simplifyPath(path);
-                if (!Path::isAbsolute(basePath))
+                // Use classifyPath so that root-relative paths (\foo) are resolved
+                // against the drive of basePath rather than being misidentified as
+                // fully-absolute on Linux via Path::isAbsolute.
+                const PathKind pathKind = classifyPath(path);
+                const PathKind baseKind = classifyPath(basePath);
+                // basePath must be a fully-qualified absolute path; root-relative or
+                // relative bases cannot be used for GetFullPath resolution.
+                if (baseKind != PathKind::UNC && baseKind != PathKind::DriveAbsolute)
                     return "";
-                std::string combined = basePath;
-                if (!combined.empty() && combined.back() != '/')
-                    combined += '/';
-                combined += path;
-                return Path::simplifyPath(combined);
+                switch (pathKind) {
+                case PathKind::UNC:
+                case PathKind::DriveAbsolute:
+                    return Path::simplifyPath(path);
+                case PathKind::RootRelative: {
+                    // Inherit drive letter from basePath: "\foo" + "C:/base/" -> "C:/foo"
+                    const std::string drive = (basePath.size() >= 2 &&
+                                               std::isalpha(static_cast<unsigned char>(basePath[0])) &&
+                                               basePath[1] == ':') ? basePath.substr(0, 2) : std::string();
+                    return Path::simplifyPath(drive + path);
+                }
+                case PathKind::DriveRelative:
+                    // "C:foo" requires the per-drive current directory for drive C:,
+                    // a Windows kernel concept unavailable in a cross-platform context.
+                    debugs.emplace_back("GetFullPath: drive-relative path cannot be resolved: " + path);
+                    return "";
+                default: {
+                    std::string combined = basePath;
+                    if (!combined.empty() && combined.back() != '/')
+                        combined += '/';
+                    combined += path;
+                    return Path::simplifyPath(combined);
+                }
+                }
             }
         }
     }
@@ -2529,20 +2562,25 @@ private:
         expect(")");
 
         // Apply the same normalization used by toAbsolute() / importPropsOrTargets():
-        // 1. Normalize native separators so Path::isAbsolute() and rfind('/') work.
+        // 1. Normalize native separators so classifyPath() and rfind('/') work.
         path = Path::fromNativeSeparators(std::move(path));
         // 2. If any $(Property) survived expansion (unknown property), we cannot
         //    resolve the path -- return "False" rather than querying the filesystem
         //    with a literal "$(...)" in the name.
         if (path.find("$(") != std::string::npos)
             return "False";
-        // 3. Resolve relative paths against the file containing this condition.
-        if (!Path::isAbsolute(path)) {
-            auto it = mVariables.find("MSBuildThisFileDirectory");
-            if (it == mVariables.end())
-                it = mVariables.find("ProjectDir");
-            if (it != mVariables.end())
-                path = it->second + path;
+        // 3. Resolve non-absolute paths against the file containing this condition.
+        // Use classifyPath so that root-relative paths (\foo -> /foo after separator
+        // normalization) are not misidentified as absolute on Linux.
+        {
+            const PathKind pk = classifyPath(path);
+            if (pk != PathKind::UNC && pk != PathKind::DriveAbsolute) {
+                auto it = mVariables.find("MSBuildThisFileDirectory");
+                if (it == mVariables.end())
+                    it = mVariables.find("ProjectDir");
+                if (it != mVariables.end())
+                    path = it->second + path;
+            }
         }
         // 4. Canonicalize: collapse . / .. and remove double slashes.
         path = Path::simplifyPath(std::move(path));
@@ -2829,6 +2867,12 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
                                    baseDir[1] == ':') ? baseDir.substr(0, 2) : std::string();
         return Path::simplifyPath(drive + resolved);
     }
+    case PathKind::DriveRelative:
+        // "C:foo" is relative to the current directory of drive C:, a per-drive
+        // CWD that is a Windows kernel concept unavailable in a cross-platform
+        // context.  Return the path unmodified rather than inventing a wrong base.
+        debugs.emplace_back("toAbsolute: drive-relative path cannot be resolved: " + resolved);
+        return resolved;
     default:
         return Path::simplifyPath(baseDir + resolved);
     }
@@ -3184,7 +3228,11 @@ void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
     const std::vector<std::string> files = expandItemSpecFiles(update, dir, properties);
 
     for (ItemGroupClCompile &compile : compileList) {
-        if (std::find(files.begin(), files.end(), compile.filename) == files.end())
+        // Use Path::sameFileName for case-insensitive matching on NTFS: a project
+        // can Include "Source\Foo.cpp" and later Update "source\foo.cpp" -- same file.
+        if (std::find_if(files.begin(), files.end(), [&](const std::string &f) {
+            return Path::sameFileName(f, compile.filename);
+        }) == files.end())
             continue;
 
         for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
@@ -3205,7 +3253,10 @@ void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
     const std::vector<std::string> files = expandItemSpecFiles(remove, dir, properties);
 
     for (auto it = compileList.begin(); it != compileList.end();) {
-        if (std::find(files.begin(), files.end(), it->filename) != files.end())
+        // Use Path::sameFileName for case-insensitive matching on NTFS.
+        if (std::find_if(files.begin(), files.end(), [&](const std::string &f) {
+            return Path::sameFileName(f, it->filename);
+        }) != files.end())
             it = compileList.erase(it);
         else
             ++it;
@@ -4690,7 +4741,10 @@ bool ImportProject::importBcb6Prj(const std::string &projectFilename)
         // We can also force C++ compilation for all files using the -P command line switch.
         const bool cppMode = forceCppMode || Path::getFilenameExtensionInLowerCase(c) == ".cpp";
         // TODO: needs to set language and ignore later identification and language enforcement
-        FileSettings fs{Path::simplifyPath(Path::isAbsolute(c) ? c : projectDir + c), Standards::Language::None, 0}; // file will be identified later on
+        // Use classifyPath so that root-relative source paths (\src\foo.cpp) are
+        // resolved against projectDir's drive rather than passed through as-is.
+        const PathKind _ck = classifyPath(Path::fromNativeSeparators(c));
+        FileSettings fs{Path::simplifyPath((_ck == PathKind::UNC || _ck == PathKind::DriveAbsolute) ? c : projectDir + c), Standards::Language::None, 0}; // file will be identified later on
         fsSetIncludePaths(fs, projectDir, toStringList(includePath), properties);
         fsSetDefines(fs, cppMode ? cppDefines : defines);
         fileSettings.push_back(std::move(fs));
@@ -4701,8 +4755,13 @@ bool ImportProject::importBcb6Prj(const std::string &projectFilename)
 
 static std::string joinRelativePath(const std::string &path1, const std::string &path2)
 {
-    if (!path1.empty() && !Path::isAbsolute(path2))
-        return path1 + path2;
+    if (!path1.empty()) {
+        // Use classifyPath so that root-relative paths (\foo) are not misidentified
+        // as absolute on Linux after fromNativeSeparators converts them to /foo.
+        const PathKind pk = classifyPath(Path::fromNativeSeparators(path2));
+        if (pk != PathKind::UNC && pk != PathKind::DriveAbsolute)
+            return path1 + path2;
+    }
     return path2;
 }
 
