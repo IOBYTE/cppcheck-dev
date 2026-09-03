@@ -508,6 +508,38 @@ static std::string findFile(const std::string &startDirectory, const std::string
     return "";
 }
 
+/// Five-way Windows/Unix path classification used by pathCombineAppend and isPathRooted.
+enum class PathKind : std::uint8_t {
+    Empty,         ///< ""
+    UNC,           ///< \\server\share  or  //server/share
+    DriveAbsolute, ///< C:\foo  or  C:/foo
+    RootRelative,  ///< \foo  or  /foo  (no drive letter)
+    DriveRelative, ///< C:foo  (drive letter, no separator)
+    Relative,      ///< foo  (everything else)
+};
+
+static PathKind classifyPath(const std::string &s)
+{
+    if (s.empty())
+        return PathKind::Empty;
+    // UNC: two leading separators.
+    if ((s[0] == '/' || s[0] == '\\') &&
+        s.size() >= 2 && (s[1] == '/' || s[1] == '\\'))
+        return PathKind::UNC;
+    // Windows drive letter.
+    if (s.size() >= 2 &&
+        std::isalpha(static_cast<unsigned char>(s[0])) &&
+        s[1] == ':') {
+        if (s.size() >= 3 && (s[2] == '/' || s[2] == '\\'))
+            return PathKind::DriveAbsolute;
+        return PathKind::DriveRelative;
+    }
+    // Single leading separator.
+    if (s[0] == '/' || s[0] == '\\')
+        return PathKind::RootRelative;
+    return PathKind::Relative;
+}
+
 // Append one path segment to `result` using Windows Path.Combine semantics:
 //   UNC          \\server\share  -- double leading sep  -> full reset
 //   Drive-abs    C:\foo          -- letter : sep        -> full reset
@@ -521,38 +553,42 @@ static void pathCombineAppend(std::string &result, const std::string &seg,
 {
     if (seg.empty())
         return;
-    if (((seg[0] == '/' || seg[0] == '\\') &&
-         seg.size() >= 2 && (seg[1] == '/' || seg[1] == '\\')) ||
-        (seg.size() >= 3 &&
-         std::isalpha(static_cast<unsigned char>(seg[0])) &&
-         seg[1] == ':' &&
-         (seg[2] == '/' || seg[2] == '\\')) ||
-        (checkIsAbsolute && Path::isAbsolute(seg))) {
-        // UNC or drive-absolute: full reset.
+    // System.IO.Path::Combine delegates to the host for absolute detection.
+    if (checkIsAbsolute && Path::isAbsolute(seg)) {
         result = seg;
-    } else if (seg[0] == '/' || seg[0] == '\\') {
-        // Root-relative (\foo): reset path but keep accumulated drive letter.
+        return;
+    }
+    switch (classifyPath(seg)) {
+    case PathKind::UNC:
+    case PathKind::DriveAbsolute:
+        // Full reset.
+        result = seg;
+        break;
+    case PathKind::RootRelative:
+        // Reset path component but preserve accumulated drive letter.
         if (result.size() >= 2 &&
             std::isalpha(static_cast<unsigned char>(result[0])) &&
             result[1] == ':')
             result = result.substr(0, 2) + seg;
         else
             result = seg;
-    } else if (seg.size() >= 2 &&
-               std::isalpha(static_cast<unsigned char>(seg[0])) &&
-               seg[1] == ':') {
-        // Drive-relative (C:foo): strip drive prefix, join remainder as relative.
+        break;
+    case PathKind::DriveRelative: {
+        // Strip drive prefix, join remainder as relative.
         const std::string rel = seg.substr(2);
         if (!rel.empty()) {
             if (!result.empty() && result.back() != '/' && result.back() != '\\')
                 result += '/';
             result += rel;
         }
-    } else {
-        // Plain relative: join.
+        break;
+    }
+    case PathKind::Relative:
+    case PathKind::Empty:
         if (!result.empty() && result.back() != '/' && result.back() != '\\')
             result += '/';
         result += seg;
+        break;
     }
 }
 
@@ -616,20 +652,14 @@ static std::string fileStem(const std::string &filename) {
 
 
 static bool isPathRooted(const std::string &filename) {
-    if (filename.empty())
-        return false;
-
-    // Unix-rooted or Windows-rooted path.
-    if (filename[0] == '/' || filename[0] == '\\')
+    switch (classifyPath(filename)) {
+    case PathKind::UNC:
+    case PathKind::DriveAbsolute:
+    case PathKind::RootRelative:
         return true;
-    // Windows drive letter: only rooted when a separator immediately follows the colon.
-    // C:\file.cpp and C:/file.cpp are rooted; C:file.cpp is drive-relative (not rooted).
-    if (filename.size() >= 2 &&
-        std::isalpha(static_cast<unsigned char>(filename[0])) &&
-        filename[1] == ':')
-        return filename.size() >= 3 && (filename[2] == '/' || filename[2] == '\\');
-
-    return false;
+    default:
+        return false;
+    }
 }
 
 static std::string getRelativePath(const std::string &absolutePath, const std::vector<std::string> &basePaths) {
