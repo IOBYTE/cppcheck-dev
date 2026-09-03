@@ -1751,6 +1751,12 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         static_cast<unsigned char>(line[2]) == 0xBF)
         line.erase(0, 3);
 
+    // skip blank line
+    if (line.empty() && !std::getline(istr, line)) {
+        errors.emplace_back("Visual Studio solution file is empty");
+        return false;
+    }
+
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
         errors.emplace_back("Visual Studio solution file header not found");
         return false;
