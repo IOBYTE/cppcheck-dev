@@ -20,9 +20,9 @@ def test_missing_project(project_ext):
 def __test_project_error(tmpdir, ext, content, expected):
     project_file = os.path.join(tmpdir, "file.{}".format(ext))
 
-    with open(project_file, 'w') as f:
+    with open(project_file, 'wb') as f:
         if content is not None:
-            f.write(content)
+            f.write(content.encode('utf-8'))
 
     ret, stdout, stderr = cppcheck(['--project=' + str(project_file)])
     assert 1 == ret
