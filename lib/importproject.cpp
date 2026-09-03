@@ -622,12 +622,12 @@ static bool isPathRooted(const std::string &filename) {
     // Unix-rooted or Windows-rooted path.
     if (filename[0] == '/' || filename[0] == '\\')
         return true;
-    // Windows drive letter: C:\..., C:/..., or drive-relative C:foo.
-    // .NET Path.IsPathRooted returns true for all three forms.
+    // Windows drive letter: only rooted when a separator immediately follows the colon.
+    // C:\file.cpp and C:/file.cpp are rooted; C:file.cpp is drive-relative (not rooted).
     if (filename.size() >= 2 &&
         std::isalpha(static_cast<unsigned char>(filename[0])) &&
         filename[1] == ':')
-        return true;
+        return filename.size() >= 3 && (filename[2] == '/' || filename[2] == '\\');
 
     return false;
 }
