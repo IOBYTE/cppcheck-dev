@@ -1255,7 +1255,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     else if (frac > 0.5)
                         rounded = static_cast<long long>(fl) + 1;
                     else { // exactly 0.5 -- round to nearest even integer
-                        const long long ifl = static_cast<long long>(fl);
+                        const auto ifl = static_cast<long long>(fl);
                         rounded = ((ifl % 2) == 0) ? ifl : ifl + 1;
                     }
                     return std::to_string(rounded);
@@ -3201,7 +3201,7 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
                     trimmed.find('?') != std::string::npos) {
                     debugs.emplace_back("ClCompile item glob not supported, skipped: '" + trimmed + "'");
                 } else {
-                    result.push_back(std::make_pair(trimmed, toAbsolute(trimmed, projectDir, properties)));
+                    result.emplace_back(std::make_pair(trimmed, toAbsolute(trimmed, projectDir, properties)));
                 }
             }
             seg.clear();
