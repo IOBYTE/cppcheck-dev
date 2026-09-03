@@ -1739,35 +1739,17 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
     debugs.clear();
 
-    // Strip \r so that CRLF .sln files opened in text mode on Linux/macOS
-    // do not leave a trailing \r on every extracted value.
-    const auto stripCR = [](std::string &s) {
-        if (!s.empty() && s.back() == '\r')
-            s.pop_back();
-    };
-
     if (!std::getline(istr,line)) {
         errors.emplace_back("Visual Studio solution file is empty");
         return false;
     }
-    stripCR(line);
 
-    // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.  Visual Studio may write it
-    // either on the same line as the header or on its own line before it (BOM + CRLF).
-    // In the latter case stripping the BOM leaves an empty line; read one more line.
+    // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.
     if (line.size() >= 3 &&
         static_cast<unsigned char>(line[0]) == 0xEF &&
         static_cast<unsigned char>(line[1]) == 0xBB &&
         static_cast<unsigned char>(line[2]) == 0xBF)
         line.erase(0, 3);
-
-    if (line.empty()) {
-        if (!std::getline(istr, line)) {
-            errors.emplace_back("Visual Studio solution file header not found");
-            return false;
-        }
-        stripCR(line);
-    }
 
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
         errors.emplace_back("Visual Studio solution file header not found");
@@ -1787,7 +1769,6 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     // so that its properties are visible to every project.
     std::vector<std::string> vcxprojs;
     while (std::getline(istr,line)) {
-        stripCR(line);
         if (startsWith(line, "VisualStudioVersion = ")) {
             solutionVariables["VisualStudioVersion"] = line.substr(std::strlen("VisualStudioVersion = "));
             continue;
