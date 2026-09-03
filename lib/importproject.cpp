@@ -614,8 +614,10 @@ static std::string msbuildUnescape(const std::string &s)
             std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
             std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
             const auto hexVal = [](char c) -> unsigned char {
-                if (c >= '0' && c <= '9') return static_cast<unsigned char>(c - '0');
-                if (c >= 'a' && c <= 'f') return static_cast<unsigned char>(c - 'a' + 10);
+                if (c >= '0' && c <= '9')
+                    return static_cast<unsigned char>(c - '0');
+                if (c >= 'a' && c <= 'f')
+                    return static_cast<unsigned char>(c - 'a' + 10);
                 return static_cast<unsigned char>(c - 'A' + 10);
             };
             result += static_cast<char>((hexVal(s[i + 1]) << 4) | hexVal(s[i + 2]));
@@ -688,12 +690,12 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
             }
             parts.push_back(s.substr(0, shareEnd)); // "//server/share"
             pos = shareEnd + 1;
-        } else if (s.size() >= 2 &&
-                   std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
+        } else if (s.size() >= 2 && std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
             // Drive-letter path: root is the two-character drive token "C:".
             parts.push_back(s.substr(0, 2));
             pos = 2;
-            if (pos < s.size() && s[pos] == '/') ++pos;
+            if (pos < s.size() && s[pos] == '/')
+                ++pos;
         } else if (!s.empty() && s[0] == '/') {
             // Root-relative path: root is "/".
             parts.emplace_back("/");
@@ -706,7 +708,8 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
             std::string seg = s.substr(pos, slash == std::string::npos ? std::string::npos : slash - pos);
             if (!seg.empty())
                 parts.push_back(std::move(seg));
-            if (slash == std::string::npos) break;
+            if (slash == std::string::npos)
+                break;
             pos = slash + 1;
         }
         return parts;
@@ -748,11 +751,13 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
         // then the remaining components of absolutePath.
         std::string rel;
         for (std::size_t i = common; i < baseParts_.size(); ++i) {
-            if (!rel.empty()) rel += '/';
+            if (!rel.empty())
+                rel += '/';
             rel += "..";
         }
         for (std::size_t i = common; i < absParts.size(); ++i) {
-            if (!rel.empty()) rel += '/';
+            if (!rel.empty())
+                rel += '/';
             rel += absParts[i];
         }
         if (!rel.empty())
@@ -984,8 +989,10 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             for (std::size_t i = 0; i < count && cmp == 0; ++i) {
                 const int l = (i < lv.size()) ? lv[i] : 0;
                 const int r = (i < rv.size()) ? rv[i] : 0;
-                if (l < r) cmp = -1;
-                else if (l > r) cmp = 1;
+                if (l < r)
+                    cmp = -1;
+                else if (l > r)
+                    cmp = 1;
             }
             bool result = false;
             if (caseInsensitiveStringCompare(member, "VersionGreaterThan") == 0)
@@ -1100,20 +1107,24 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         if (caseInsensitiveStringCompare(member, "IsNullOrEmpty") == 0 && args.size() == 1)
             return args[0].empty() ? "True" : "False";
         if (caseInsensitiveStringCompare(member, "IsNullOrWhiteSpace") == 0 && args.size() == 1) {
-            for (const char c : args[0])
+            for (const char c : args[0]) {
                 // cppcheck-suppress useStlAlgorithm
-                if (!std::isspace(static_cast<unsigned char>(c))) return "False";
+                if (!std::isspace(static_cast<unsigned char>(c)))
+                    return "False";
+            }
             return "True";
         }
         if (caseInsensitiveStringCompare(member, "Concat") == 0) {
             std::string result;
-            for (const std::string &a : args) result += a;
+            for (const std::string &a : args)
+                result += a;
             return result;
         }
         if (caseInsensitiveStringCompare(member, "Join") == 0 && args.size() >= 2) {
             std::string result;
             for (std::size_t i = 1; i < args.size(); ++i) {
-                if (i > 1) result += args[0];
+                if (i > 1)
+                    result += args[0];
                 result += args[i];
             }
             return result;
@@ -1221,7 +1232,10 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                         continue;
                     }
                     const std::size_t close = fmt.find('}', i + 1);
-                    if (close == std::string::npos) { result += '{'; continue; }
+                    if (close == std::string::npos) {
+                        result += '{';
+                        continue;
+                    }
                     const std::string inner = fmt.substr(i + 1, close - i - 1);
                     const std::size_t colon = inner.find(':');
                     const std::string indexStr = inner.substr(0, colon == std::string::npos ? inner.size() : colon);
@@ -1247,7 +1261,8 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
 
     if (caseInsensitiveStringCompare(className, "System.Math") == 0) {
         const auto toDouble = [](const std::string &s, double &out) -> bool {
-            if (s.empty()) return false;
+            if (s.empty())
+                return false;
             char *end = nullptr;
             out = std::strtod(s.c_str(), &end);
             return end != s.c_str() && *end == '\0';
@@ -1374,12 +1389,14 @@ static void parseMSBuildStaticRef(const std::string &s, std::size_t &pos,
     ++pos;  // skip '['
     while (pos < s.size() && s[pos] != ']')
         className += s[pos++];
-    if (pos < s.size()) ++pos;  // skip ']'
+    if (pos < s.size())  // skip ']'
+        ++pos;
     if (pos + 1 < s.size() && s[pos] == ':' && s[pos + 1] == ':')
         pos += 2;  // skip '::'
     while (pos < s.size()) {
         const auto c = static_cast<unsigned char>(s[pos]);
-        if (!std::isalnum(c) && c != '_') break;
+        if (!std::isalnum(c) && c != '_')
+            break;
         member += s[pos++];
     }
 }
@@ -1398,7 +1415,8 @@ struct ImportProject::PropertyValueExpander {
         : mProject(project),mVars(vars), mStr(std::move(str)) {}
 
     bool isKnown(const std::string &name) const {
-        if (mVars.count(name)) return true;
+        if (mVars.count(name))
+            return true;
         return std::getenv(name.c_str()) != nullptr;
     }
 
@@ -1421,7 +1439,8 @@ struct ImportProject::PropertyValueExpander {
                 continue;
             }
             const auto c = static_cast<unsigned char>(mStr[mPos]);
-            if (!std::isalnum(c) && c != '_') break;
+            if (!std::isalnum(c) && c != '_')
+                break;
             result += mStr[mPos++];
         }
         return result;
@@ -1444,7 +1463,8 @@ struct ImportProject::PropertyValueExpander {
                 else
                     s += mStr[mPos++];
             }
-            if (mPos < mStr.size()) ++mPos;  // consume closing '\''
+            if (mPos < mStr.size()) // consume closing '\''
+                ++mPos;
             return s;
         }
         if (mStr.compare(mPos, 2, "$(") == 0) {
@@ -1486,9 +1506,11 @@ struct ImportProject::PropertyValueExpander {
             args.push_back(parseArg());
             while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
                 ++mPos;
-            if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
+            if (mPos < mStr.size() && mStr[mPos] == ',')
+                ++mPos;
         }
-        if (mPos < mStr.size()) ++mPos;  // skip ')'
+        if (mPos < mStr.size()) // skip ')'
+            ++mPos;
         return args;
     }
 
@@ -1520,7 +1542,8 @@ struct ImportProject::PropertyValueExpander {
                 std::string chainMethod;
                 while (mPos < mStr.size()) {
                     const auto c = static_cast<unsigned char>(mStr[mPos]);
-                    if (!std::isalnum(c) && c != '_') break;
+                    if (!std::isalnum(c) && c != '_')
+                        break;
                     chainMethod += mStr[mPos++];
                 }
                 if (mPos >= mStr.size() || mStr[mPos] != '(') {
@@ -1537,7 +1560,8 @@ struct ImportProject::PropertyValueExpander {
                     mProject.debugs.emplace_back("applyPropertyMethod (chained): unknown error for method '" + chainMethod + "'");
                 }
             }
-            if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip outer ')'
+            if (mPos < mStr.size() && mStr[mPos] == ')') // skip outer ')'
+                ++mPos;
             return value;
         }
 
@@ -1559,7 +1583,8 @@ struct ImportProject::PropertyValueExpander {
             std::string method;
             while (mPos < mStr.size()) {
                 const auto c = static_cast<unsigned char>(mStr[mPos]);
-                if (!std::isalnum(c) && c != '_') break;
+                if (!std::isalnum(c) && c != '_')
+                    break;
                 method += mStr[mPos++];
             }
             if (mPos >= mStr.size() || mStr[mPos] != '(') {
@@ -1577,7 +1602,8 @@ struct ImportProject::PropertyValueExpander {
                 mProject.debugs.emplace_back("applyPropertyMethod: unknown error for method '" + method + "'");
             }
         }
-        if (mPos < mStr.size() && mStr[mPos] == ')') ++mPos;  // skip closing ')'
+        if (mPos < mStr.size() && mStr[mPos] == ')') // skip closing ')'
+            ++mPos;
         return value;
     }
 
@@ -1596,7 +1622,8 @@ struct ImportProject::PropertyValueExpander {
                     result += mStr[mPos++];
             }
             mStr = std::move(result);
-            if (!mChanged) break;
+            if (!mChanged)
+                break;
         }
         return mStr;
     }
@@ -2161,10 +2188,14 @@ public:
 
     /** Apply an MSBuild relational operator string ("<", ">", "<=", ">="). */
     bool compareOp(const std::string &op, const MSBuildVersion &rhs) const {
-        if (op == "<") return *this <  rhs;
-        if (op == ">") return *this >  rhs;
-        if (op == "<=") return *this <= rhs;
-        if (op == ">=") return *this >= rhs;
+        if (op == "<")
+            return *this <  rhs;
+        if (op == ">")
+            return *this >  rhs;
+        if (op == "<=")
+            return *this <= rhs;
+        if (op == ">=")
+            return *this >= rhs;
         return false;
     }
 
@@ -2186,8 +2217,10 @@ private:
         for (std::size_t i = 0; i < count; ++i) {
             const int l = component(i);
             const int r = rhs.component(i);
-            if (l < r) return -1;
-            if (l > r) return 1;
+            if (l < r)
+                return -1;
+            if (l > r)
+                return 1;
         }
         return 0;
     }
@@ -2270,7 +2303,8 @@ private:
         std::string lhs = parseAnd();
         while (matchWord("or")) {
             const bool savedEvaluate = mEvaluate;
-            if (lhs == "True") mEvaluate = false;
+            if (lhs == "True")
+                mEvaluate = false;
             const std::string rhs = parseAnd();
             mEvaluate = savedEvaluate;
             if (lhs != "True")
@@ -2283,7 +2317,8 @@ private:
         std::string lhs = parseUnary();
         while (matchWord("and")) {
             const bool savedEvaluate = mEvaluate;
-            if (lhs == "False") mEvaluate = false;
+            if (lhs == "False")
+                mEvaluate = false;
             const std::string rhs = parseUnary();
             mEvaluate = savedEvaluate;
             if (lhs != "False")
@@ -2652,10 +2687,14 @@ private:
         long lhsInt = 0;
         long rhsInt = 0;
         if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
-            if (op == "<") return lhsInt <  rhsInt;
-            if (op == ">") return lhsInt >  rhsInt;
-            if (op == "<=") return lhsInt <= rhsInt;
-            if (op == ">=") return lhsInt >= rhsInt;
+            if (op == "<")
+                return lhsInt <  rhsInt;
+            if (op == ">")
+                return lhsInt >  rhsInt;
+            if (op == "<=")
+                return lhsInt <= rhsInt;
+            if (op == ">=")
+                return lhsInt >= rhsInt;
         }
 
         const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
@@ -2724,7 +2763,10 @@ namespace {
     // Trim leading and trailing ASCII whitespace in-place.
     void trimWhitespace(std::string &s) {
         const auto first = s.find_first_not_of(" \t\r\n");
-        if (first == std::string::npos) { s.clear(); return; }
+        if (first == std::string::npos) {
+            s.clear();
+            return;
+        }
         s.erase(0, first);
         s.erase(s.find_last_not_of(" \t\r\n") + 1);
     }
@@ -2978,7 +3020,8 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
             // Use findMatchingParen so nested parens inside a metadata value are
             // handled correctly.  p points at '%'; p+1 is the opening '('.
             const std::string::size_type e = findMatchingParen(original, p + 1);
-            if (e == std::string::npos) break;
+            if (e == std::string::npos)
+                break;
             const std::string key = original.substr(p + 2, e - p - 2);
             const auto it = metadata.find(key);
             const std::string repl = (it != metadata.end()) ? it->second : std::string();
@@ -3031,7 +3074,8 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
         std::string::size_type p = 0;
         while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
             const std::string::size_type e = findMatchingParen(expandedOriginal, p + 1);
-            if (e == std::string::npos) break;
+            if (e == std::string::npos)
+                break;
             const std::string key = expandedOriginal.substr(p + 2, e - p - 2);
             const auto it = metadata.find(key);
             const std::string repl = (it != metadata.end()) ? it->second : std::string();
@@ -3047,7 +3091,8 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
         std::string::size_type pos = 0;
         while ((pos = text.find("%(", pos)) != std::string::npos) {
             const std::string::size_type end = findMatchingParen(text, pos + 1);
-            if (end == std::string::npos) break;
+            if (end == std::string::npos)
+                break;
             const std::string key = text.substr(pos + 2, end - pos - 2);
             const auto it = metadata.find(key);
             const std::string replacement = (it != metadata.end()) ? it->second : std::string();
@@ -3434,7 +3479,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     }
     const std::string file = toAbsolute(projectAttribute, projectDir, properties);
     const std::string extension = Path::getFilenameExtensionInLowerCase(file);
-    if (extension == ".props" || extension == ".targets") {
+    if (extension == ".props" || extension == ".targets" || extension == ".vcxitems") {
         const char *sdk = node->Attribute("Sdk");
         if (sdk) {
             debugs.emplace_back("Could not import \"" + file + "\" - " + " (Sdk not supported)");
@@ -3624,17 +3669,36 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         if (result == ImportResult::NotResolvable) {
             debugs.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
         }
-    } else if (extension == ".vcxitems") {
-        ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-        if (result > ImportResult::NotResolvable)
-            debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-        if (result == ImportResult::NotResolvable) {
-            debugs.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
-        }
     } else {
         debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
     }
     return ImportResult::Ok;
+}
+
+ImportProject::ImportResult ImportProject::importImportGroup(
+    const tinyxml2::XMLElement *node,
+    const std::string &baseDir,
+    PropertiesMap &properties,
+    MetadataMap &metadata,
+    std::list<ItemGroupClCompile> &compileList,
+    std::list<ProjectConfiguration> &projectConfigurationList,
+    std::unordered_set<std::string> &importStack,
+    EvalPhase phase)
+{
+    ImportResult ret = ImportResult::Ok;
+    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
+        if (hasNameAndAttribute(e, "Import", "Project", properties)) {
+            const ImportResult result = importProject(e, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            if (result > ImportResult::NotResolvable) {
+                if (phase != EvalPhase::Discover) {
+                    const char *proj = e->Attribute("Project");
+                    debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
+                }
+                ret = std::max(result, ret);
+            }
+        }
+    }
+    return ret;
 }
 
 ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::string &file,
@@ -3696,32 +3760,11 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     ImportResult ret = ImportResult::Ok;
     for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
         if (hasName(node, "ImportGroup", properties)) {
-            // Accept any <ImportGroup> (PropertySheets, Shared, unlabeled) -- .targets files
-            // commonly use unlabeled or differently-labeled groups for transitive imports.
-            const char* label = node->Attribute("Label");
-            // MSBuild label matching is case-insensitive; use caseInsensitiveStringCompare
-            // so that non-VS toolchains that emit lowercase labels are handled correctly.
-            const bool isPropertySheets = (label == nullptr) ||
-                                          (caseInsensitiveStringCompare(label, "PropertySheets") == 0) ||
-                                          (caseInsensitiveStringCompare(label, "Shared") == 0) ||
-                                          (caseInsensitiveStringCompare(label, "ExtensionSettings") == 0) ||
-                                          (caseInsensitiveStringCompare(label, "ExtensionTargets") == 0);
-            if (isPropertySheets) {
-                for (const tinyxml2::XMLElement *importGroup = node->FirstChildElement(); importGroup; importGroup = importGroup->NextSiblingElement()) {
-                    if (hasNameAndAttribute(importGroup, "Import", "Project", properties)) {
-                        ImportResult result = importProject(importGroup, propsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                        // Non-fatal: log and continue so later elements (including
-                        // <ItemGroup Label="ProjectConfigurations">) are still processed.
-                        if (result > ImportResult::NotResolvable) {
-                            if (phase != EvalPhase::Discover) {
-                                const char *proj = importGroup->Attribute("Project");
-                                debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
-                            }
-                            ret = std::max(result, ret);
-                        }
-                    }
-                }
-            }
+            // MSBuild's Label attribute on <ImportGroup> is purely informational metadata
+            // for the IDE and toolchain; MSBuild itself processes every <ImportGroup>
+            // unconditionally.  importProject() dispatches by file extension, so no
+            // per-label branching is needed.
+            ret = std::max(ret, importImportGroup(node, propsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase));
         } else if (hasName(node, "PropertyGroup", properties)) {
             if (phase == EvalPhase::Properties || phase == EvalPhase::Discover) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
@@ -3758,7 +3801,7 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
             }
         } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
             // Handle plain (unlabeled) or otherwise-labeled ItemGroups that contain
-            // ClCompile elements. This is the same logic as importVcxitems; .targets
+            // ClCompile elements; .targets
             // files from SDK-style toolchains (WinUI, CppWinRT, vcpkg, unity builds)
             // frequently contribute source files this way.
             if (phase == EvalPhase::Items) {
@@ -3786,98 +3829,6 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     }
 
     return ret;
-}
-
-ImportProject::ImportResult ImportProject::importVcxitems(const std::string &items,
-                                                          PropertiesMap &properties,
-                                                          MetadataMap &metadata,
-                                                          std::list<ItemGroupClCompile> &compileList,
-                                                          std::list<ProjectConfiguration> &projectConfigurationList,
-                                                          std::unordered_set<std::string> &importStack,
-                                                          EvalPhase phase)
-{
-    std::string filename(items);
-    // properties can't be resolved
-    if (!simplifyPathWithVariables(filename, properties))
-        return ImportResult::NotResolvable;
-
-    // prepend project dir (if it exists) to transform relative paths into absolute ones
-    // Use classifyPath so that root-relative paths (\foo -> C:\foo) are resolved
-    // against the base drive, not treated as absolute on Linux.
-    {
-        const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
-        if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
-            filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
-    }
-
-    // Normalize to lowercase so that NTFS case variants are treated as the same file.
-    std::string simplifiedFilename = Path::simplifyPath(filename);
-    std::transform(simplifiedFilename.begin(), simplifiedFilename.end(), simplifiedFilename.begin(),
-                   [](unsigned char c) {
-        return std::tolower(c);
-    });
-    if (!importStack.insert(simplifiedFilename).second)
-        return ImportResult::Cycle;
-
-    ImportStackGuard guard(importStack, simplifiedFilename);  // erases on any exit from here
-
-    tinyxml2::XMLDocument doc;
-    {
-        const tinyxml2::XMLError xmlErr = doc.LoadFile(filename.c_str());
-        if (xmlErr != tinyxml2::XML_SUCCESS) {
-            if (xmlErr == tinyxml2::XML_ERROR_FILE_NOT_FOUND ||
-                xmlErr == tinyxml2::XML_ERROR_FILE_COULD_NOT_BE_OPENED ||
-                xmlErr == tinyxml2::XML_ERROR_FILE_READ_ERROR)
-                return ImportResult::NotFound;
-            return ImportResult::NotValid;  // file exists but is malformed XML
-        }
-    }
-
-    const tinyxml2::XMLElement *const rootnode = doc.FirstChildElement();
-    if (rootnode == nullptr)
-        return ImportResult::NotValid;
-
-    const std::string itemsDir = Path::simplifyPath(Path::getPathFromFilename(filename));
-    MSBuildThis msBuildThis(filename, properties);
-
-    for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
-        if (hasName(node, "ItemGroup", properties)) {
-            if (phase == EvalPhase::Items) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                    if (hasName(e, "ClCompile", properties)) {
-                        if (e->Attribute("Include"))
-                            importCompile(e, itemsDir, properties, metadata, compileList);
-                        else if (e->Attribute("Update"))
-                            applyClCompileUpdate(e, itemsDir, properties, compileList);
-                        else if (e->Attribute("Remove"))
-                            applyClCompileRemove(e, itemsDir, properties, compileList);
-                    }
-                }
-            }
-        } else if (hasName(node, "PropertyGroup", properties)) {
-            if (phase == EvalPhase::Properties) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
-                    addProperty(e, properties);
-            }
-        } else if (hasName(node, "ItemDefinitionGroup", properties)) {
-            if (phase == EvalPhase::ItemDefs) {
-                for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-                    if (hasName(e1, "ClCompile", properties)) {
-                        for (const tinyxml2::XMLElement *e2 = e1->FirstChildElement(); e2; e2 = e2->NextSiblingElement())
-                            addMetadata(e2, properties, metadata);
-                    }
-                }
-            }
-        } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
-            const ImportResult result = importProject(node, itemsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-            if (result > ImportResult::NotResolvable) {
-                const char *proj = node->Attribute("Project");
-                debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" in \"" + filename + "\" - " + importResultStr(result) + " (continuing)");
-            }
-        }
-    }
-
-    return ImportResult::Ok;
 }
 
 bool ImportProject::importVcxproj(const std::string &filename,
@@ -4050,55 +4001,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
                     addProperty(e, properties);
             } else if (hasName(node, "ImportGroup", properties)) {
-                const char *labelAttribute = node->Attribute("Label");
-                if (labelAttribute && caseInsensitiveStringCompare(labelAttribute, "PropertySheets") == 0) {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                            if (result > ImportResult::NotResolvable)
-                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
-                        }
-                    }
-                } else if (labelAttribute && caseInsensitiveStringCompare(labelAttribute, "Shared") == 0) {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            std::string file = toAbsolute(projectAttribute, projectDir, properties);
-                            std::string extension = Path::getFilenameExtensionInLowerCase(file);
-                            if (extension == ".vcxitems") {
-                                ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                                if (result == ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
-                            } else {
-                                // A Shared ImportGroup may contain .props/.targets as well
-                                // as .vcxitems -- process them the same as a PropertySheets group.
-                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                            }
-                        }
-                    }
-                } else {
-                    // Unlabeled or other-labeled ImportGroup (e.g. ExtensionSettings,
-                    // ExtensionTargets) -- process <Import> children like PropertySheets.
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
-                            if (result > ImportResult::NotResolvable)
-                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
-                        }
-                    }
-                }
+                importImportGroup(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
             } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
                 const ImportResult result = importProject(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
                 if (result > ImportResult::NotResolvable) {
@@ -4122,39 +4025,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     }
                 }
             } else if (hasName(node, "ImportGroup", properties)) {
-                const char *labelAttribute = node->Attribute("Label");
-                if (labelAttribute && caseInsensitiveStringCompare(labelAttribute, "Shared") == 0) {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            std::string file = toAbsolute(projectAttribute, projectDir, properties);
-                            if (Path::getFilenameExtensionInLowerCase(file) == ".vcxitems") {
-                                ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                            } else {
-                                // A Shared ImportGroup may contain .props/.targets as well
-                                // as .vcxitems -- process them the same as a PropertySheets group.
-                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                            }
-                        }
-                    }
-                } else {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
-                            if (result > ImportResult::NotResolvable)
-                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
-                        }
-                    }
-                }
+                importImportGroup(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
             } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
                 const ImportResult result = importProject(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
                 if (result > ImportResult::NotResolvable) {
@@ -4181,41 +4052,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     }
                 }
             } else if (hasName(node, "ImportGroup", properties)) {
-                const char *labelAttribute = node->Attribute("Label");
-                if (labelAttribute && caseInsensitiveStringCompare(labelAttribute, "Shared") == 0) {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            std::string file = toAbsolute(projectAttribute, projectDir, properties);
-                            if (Path::getFilenameExtensionInLowerCase(file) == ".vcxitems") {
-                                ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                                if (result == ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
-                            } else {
-                                // A Shared ImportGroup may contain .props/.targets as well
-                                // as .vcxitems -- process them the same as a PropertySheets group.
-                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
-                                if (result > ImportResult::NotResolvable)
-                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-                            }
-                        }
-                    }
-                } else {
-                    for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                        if (hasName(e, "Import", properties)) {
-                            const char *projectAttribute = e->Attribute("Project");
-                            if (!projectAttribute)
-                                continue;
-                            const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
-                            if (result > ImportResult::NotResolvable)
-                                debugs.emplace_back("Could not fully import \"" + std::string(projectAttribute) + "\" - " + importResultStr(result) + " (continuing)");
-                        }
-                    }
-                }
+                importImportGroup(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
             } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
                 const ImportResult result = importProject(node, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
                 if (result > ImportResult::NotResolvable) {

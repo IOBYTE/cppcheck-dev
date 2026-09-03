@@ -1064,7 +1064,7 @@ private:
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:/foo'))"));
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:\\\\foo'))"));
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('\\\\server\\\\share'))"));
-        ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:file.cpp'))"));  // drive-relative, not rooted
+        ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('C:file.cpp'))"));  // drive-relative: .NET returns True (has drive letter)
         ASSERT_EQUALS("False", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::IsPathRooted('foo'))"));
         // Path.Combine: 1, 2, 3, N args; absolute segment resets path
         ASSERT_EQUALS("a", cppcheck::testing::expandMSBuildExpression("$([System.IO.Path]::Combine('a'))"));

@@ -191,13 +191,6 @@ private:
                                       std::list<ProjectConfiguration> &projectConfigurationList,
                                       std::unordered_set<std::string> &importStack,
                                       EvalPhase phase = EvalPhase::Properties);
-    ImportResult importVcxitems(const std::string &items,
-                                PropertiesMap &properties,
-                                MetadataMap &metadata,
-                                std::list<ItemGroupClCompile> &compileList,
-                                std::list<ProjectConfiguration> &projectConfigurationList,
-                                std::unordered_set<std::string> &importStack,
-                                EvalPhase phase = EvalPhase::Properties);
     ImportResult importProject(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                PropertiesMap &properties,
@@ -206,6 +199,14 @@ private:
                                std::list<ProjectConfiguration> &projectConfigurationList,
                                std::unordered_set<std::string> &importStack,
                                EvalPhase phase = EvalPhase::Properties);
+    ImportResult importImportGroup(const tinyxml2::XMLElement *node,
+                                   const std::string &baseDir,
+                                   PropertiesMap &properties,
+                                   MetadataMap &metadata,
+                                   std::list<ItemGroupClCompile> &compileList,
+                                   std::list<ProjectConfiguration> &projectConfigurationList,
+                                   std::unordered_set<std::string> &importStack,
+                                   EvalPhase phase);
     ImportResult importCompile(const tinyxml2::XMLElement *node,
                                const std::string &projectDir,
                                const PropertiesMap &properties,
