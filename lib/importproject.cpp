@@ -1739,10 +1739,18 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
     debugs.clear();
 
+    // Strip trailing \r so that CRLF .sln files opened in text mode on Linux/macOS
+    // do not leave a trailing \r on every extracted value.
+    const auto stripCR = [](std::string &s) {
+        if (!s.empty() && s.back() == '\r')
+            s.pop_back();
+    };
+
     if (!std::getline(istr,line)) {
         errors.emplace_back("Visual Studio solution file is empty");
         return false;
     }
+    stripCR(line);
 
     // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.
     if (line.size() >= 3 &&
@@ -1751,10 +1759,13 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         static_cast<unsigned char>(line[2]) == 0xBF)
         line.erase(0, 3);
 
-    // skip blank line
-    if (line.empty() && !std::getline(istr, line)) {
-        errors.emplace_back("Visual Studio solution file is empty");
-        return false;
+    // Visual Studio writes a blank line before the header (also handles a BOM-only line).
+    if (line.empty()) {
+        if (!std::getline(istr, line)) {
+            errors.emplace_back("Visual Studio solution file header not found");
+            return false;
+        }
+        stripCR(line);
     }
 
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
@@ -1775,6 +1786,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     // so that its properties are visible to every project.
     std::vector<std::string> vcxprojs;
     while (std::getline(istr,line)) {
+        stripCR(line);
         if (startsWith(line, "VisualStudioVersion = ")) {
             solutionVariables["VisualStudioVersion"] = line.substr(std::strlen("VisualStudioVersion = "));
             continue;
