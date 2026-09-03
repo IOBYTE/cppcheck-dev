@@ -508,60 +508,79 @@ static PathKind classifyPath(const std::string &s)
     return PathKind::Relative;
 }
 
-// Append one path segment to `result` using Windows Path.Combine semantics:
-//   UNC          \\server\share  -- double leading sep  -> full reset
-//   Drive-abs    C:\foo          -- letter : sep        -> full reset
-//   Root-rel     \foo            -- single leading sep  -> reset path, keep drive letter
-//   Drive-rel    C:foo           -- letter : no sep     -> strip drive, join as relative
-//   Relative     foo             -- everything else     -> plain join
-// When `checkIsAbsolute` is true, Path::isAbsolute() is also consulted for the
-// full-reset case (used by System.IO.Path::Combine which defers to the host).
-static void pathCombineAppend(std::string &result, const std::string &seg,
+// Append one path segment to `result` using Windows path-combination semantics.
+// classifyPath() is the sole authority for path kind; Path::isAbsolute() is
+// intentionally NOT used here because it is host-dependent and would misclassify
+// root-relative Windows paths (\foo -> /foo after fromNativeSeparators) as
+// fully-absolute on Linux.
+//
+// Returns true if the segment was fully resolved, false if it could not be
+// resolved correctly and `result` was left unchanged.  Callers must emit a
+// diagnostic on false; they must NOT silently continue with a wrong path.
+//
+// Two modes, selected by `checkIsAbsolute`:
+//
+//  false  -- MSBuild property-evaluation combine (e.g. $(A)\$(B)):
+//    UNC / DriveAbsolute  -> full reset, returns true
+//    RootRelative  \foo   -> reset path, inherit drive: "C:" + "\foo" = "C:/foo", returns true
+//    DriveRelative  C:foo -> UNSUPPORTED: resolving "C:foo" requires the per-drive CWD
+//                           for drive C:, which is a Windows kernel concept unavailable
+//                           here.  Leaves result unchanged and returns false.
+//    Relative / Empty     -> plain join, returns true
+//
+//  true   -- System.IO.Path.Combine semantics:
+//    UNC / DriveAbsolute  -> full reset, returns true
+//    RootRelative  \foo   -> full reset (Path.IsPathRooted = true; drive NOT inherited,
+//                           matching .NET Path.Combine behaviour), returns true
+//    DriveRelative  C:foo -> full reset (Path.IsPathRooted = true for "C:foo"), returns true
+//    Relative / Empty     -> plain join, returns true
+static bool pathCombineAppend(std::string &result, const std::string &seg,
                               bool checkIsAbsolute = false)
 {
     if (seg.empty())
-        return;
-    // System.IO.Path::Combine delegates to the host for absolute detection.
-    if (checkIsAbsolute && Path::isAbsolute(seg)) {
-        result = seg;
-        return;
-    }
+        return true;
     switch (classifyPath(seg)) {
     case PathKind::UNC:
     case PathKind::DriveAbsolute:
-        // Full reset.
+        // Full reset in both modes.
         result = seg;
-        break;
+        return true;
     case PathKind::RootRelative:
-        // Reset path component but preserve accumulated drive letter.
-        if (result.size() >= 2 &&
-            std::isalpha(static_cast<unsigned char>(result[0])) &&
-            result[1] == ':')
-            result = result.substr(0, 2) + seg;
-        else
+        if (checkIsAbsolute) {
+            // System.IO.Path.Combine: root-relative is rooted; discard accumulated
+            // base (including any drive letter) and return the segment as-is.
             result = seg;
-        break;
-    case PathKind::DriveRelative: {
-        // Drive-relative path (e.g. C:foo): on Windows this is relative to the CWD
-        // of that specific drive.  We have no per-drive CWD available, so we strip
-        // the drive letter and join the remainder as a regular relative segment.
-        // This is the best approximation possible in a cross-platform context and
-        // is sufficient for the MSBuild property-sheet files encountered in practice.
-        const std::string rel = seg.substr(2);
-        if (!rel.empty()) {
-            if (!result.empty() && result.back() != '/' && result.back() != '\\')
-                result += '/';
-            result += rel;
+        } else {
+            // MSBuild property eval: reset the path component but preserve the
+            // accumulated drive letter so "\foo" on "C:/project/" -> "C:/foo".
+            if (result.size() >= 2 &&
+                std::isalpha(static_cast<unsigned char>(result[0])) &&
+                result[1] == ':')
+                result = result.substr(0, 2) + seg;
+            else
+                result = seg;
         }
-        break;
-    }
+        return true;
+    case PathKind::DriveRelative:
+        if (checkIsAbsolute) {
+            // System.IO.Path.Combine: drive-relative is rooted (Path.IsPathRooted
+            // returns true for "C:foo"); discard the accumulated base.
+            result = seg;
+            return true;
+        }
+        // MSBuild property eval: "C:foo" means foo relative to the current directory
+        // of drive C:, a per-drive CWD that is a Windows kernel concept.  We have no
+        // way to resolve this correctly in a cross-platform context.  Leave result
+        // unchanged and signal the caller to emit a diagnostic.
+        return false;
     case PathKind::Relative:
     case PathKind::Empty:
         if (!result.empty() && result.back() != '/' && result.back() != '\\')
             result += '/';
         result += seg;
-        break;
+        return true;
     }
+    return true; // unreachable; silences -Wreturn-type
 }
 
 // MSBuild special characters that must be percent-encoded in property values.
@@ -871,8 +890,8 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) -- join segments, normalize
         // \ to /, and resolve . and .. components.  Internally MSBuild calls
         // Path.GetFullPath(Path.Combine(paths)), so multi-segment joining follows
-        // System.IO.Path.Combine semantics: an absolute segment resets the accumulated
-        // path (including the Path::isAbsolute host-delegate check).
+        // System.IO.Path.Combine semantics: a rooted segment (UNC, DriveAbsolute,
+        // RootRelative, or DriveRelative) resets the accumulated path.
         if (caseInsensitiveStringCompare(member, "NormalizePath") == 0) {
             if (args.empty()) {
                 debugs.emplace_back("NormalizePath: called with no arguments");
@@ -2776,9 +2795,21 @@ namespace {
 std::string ImportProject::toAbsolute(const std::string &path)
 {
     std::string internal(Path::fromNativeSeparators(path));
-    if (Path::isAbsolute(internal))
+    switch (classifyPath(internal)) {
+    case PathKind::UNC:
+    case PathKind::DriveAbsolute:
         return Path::simplifyPath(internal);
-    return Path::simplifyPath(Path::getCurrentPath() + "/" + internal);
+    case PathKind::RootRelative: {
+        // Inherit drive letter from CWD: "\foo" on drive C: -> "C:/foo"
+        const std::string cwd = Path::fromNativeSeparators(Path::getCurrentPath());
+        const std::string drive = (cwd.size() >= 2 &&
+                                   std::isalpha(static_cast<unsigned char>(cwd[0])) &&
+                                   cwd[1] == ':') ? cwd.substr(0, 2) : std::string();
+        return Path::simplifyPath(drive + internal);
+    }
+    default:
+        return Path::simplifyPath(Path::fromNativeSeparators(Path::getCurrentPath()) + "/" + internal);
+    }
 }
 
 std::string ImportProject::toAbsolute(const std::string &filename, const std::string &baseDir, const PropertiesMap &properties)
@@ -2787,9 +2818,20 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
     if (!simplifyPathWithVariables(resolved, properties))
         return resolved;
 
-    if (Path::isAbsolute(resolved))
+    switch (classifyPath(resolved)) {
+    case PathKind::UNC:
+    case PathKind::DriveAbsolute:
         return Path::simplifyPath(resolved);
-    return Path::simplifyPath(baseDir + resolved);
+    case PathKind::RootRelative: {
+        // Inherit drive letter from baseDir: "\foo" with base "C:/project/" -> "C:/foo"
+        const std::string drive = (baseDir.size() >= 2 &&
+                                   std::isalpha(static_cast<unsigned char>(baseDir[0])) &&
+                                   baseDir[1] == ':') ? baseDir.substr(0, 2) : std::string();
+        return Path::simplifyPath(drive + resolved);
+    }
+    default:
+        return Path::simplifyPath(baseDir + resolved);
+    }
 }
 
 bool ImportProject::simplifyPathWithVariables(std::string &s, const PropertiesMap &properties)
@@ -3277,7 +3319,7 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
                                           ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
                                           : std::string();
 
-            compile.metadata["Identity"] = toInclude;
+            compile.metadata["Identity"] = Path::fromNativeSeparators(spec.first);
             compile.metadata["FullPath"] = toInclude;
             compile.metadata["RootDir"] = rootDir;
             compile.metadata["Filename"] = stem;
@@ -3558,8 +3600,13 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
         return ImportResult::NotResolvable;
 
     // prepend project dir (if it exists) to transform relative paths into absolute ones
-    if (!Path::isAbsolute(filename) && properties.count("ProjectDir") > 0)
-        filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
+    // Use classifyPath so that root-relative paths (\foo -> C:\foo) are resolved
+    // against the base drive, not treated as absolute on Linux.
+    {
+        const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
+        if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
+            filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
+    }
 
     // detect circular property sheet imports (A imports B, B imports A, a file importing
     // itself, ...) instead of recursing until the stack overflows - mirrors MSBuild's own
@@ -3704,8 +3751,13 @@ ImportProject::ImportResult ImportProject::importVcxitems(const std::string &ite
         return ImportResult::NotResolvable;
 
     // prepend project dir (if it exists) to transform relative paths into absolute ones
-    if (!Path::isAbsolute(filename) && properties.count("ProjectDir") > 0)
-        filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
+    // Use classifyPath so that root-relative paths (\foo -> C:\foo) are resolved
+    // against the base drive, not treated as absolute on Linux.
+    {
+        const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
+        if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
+            filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
+    }
 
     // Normalize to lowercase so that NTFS case variants are treated as the same file.
     std::string simplifiedFilename = Path::simplifyPath(filename);
@@ -5048,7 +5100,12 @@ std::string cppcheck::testing::resolveVcxitemsFilename(const std::string& items,
     std::string filename(items);
     if (!project.simplifyPathWithVariables(filename, properties))
         return {};
-    if (!Path::isAbsolute(filename) && properties.count("ProjectDir") > 0)
-        filename = project.toAbsolute(filename, properties.at("ProjectDir"), properties);
+    // Use classifyPath so that root-relative paths (\foo -> C:\foo) are resolved
+    // against the base drive, not treated as absolute on Linux.
+    {
+        const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
+        if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
+            filename = project.toAbsolute(filename, properties.at("ProjectDir"), properties);
+    }
     return filename;
 }

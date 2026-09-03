@@ -102,7 +102,7 @@ def test_sln_invalid_file(tmpdir):
 
 
 def test_sln_no_header(tmpdir):
-    content = "\xEF\xBB\xBF\r\n" \
+    content = "﻿\r\n" \
               "some header"
 
     expected = "Visual Studio solution file header not found"
@@ -111,7 +111,7 @@ def test_sln_no_header(tmpdir):
 
 
 def test_sln_no_projects(tmpdir):
-    content = "\xEF\xBB\xBF\r\n" \
+    content = "﻿\r\n" \
               "Microsoft Visual Studio Solution File, Format Version 12.00\r\n"
 
     expected = "no projects found in Visual Studio solution file"
@@ -120,7 +120,7 @@ def test_sln_no_projects(tmpdir):
 
 
 def test_sln_project_file_not_found(tmpdir):
-    content = "\xEF\xBB\xBF\r\n" \
+    content = "﻿\r\n" \
               "Microsoft Visual Studio Solution File, Format Version 12.00\r\n" \
               "# Visual Studio Version 16\r\n" \
               "VisualStudioVersion = 16.0.29020.237\r\n" \
