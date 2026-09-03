@@ -33,6 +33,7 @@
 #include <set>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 class Settings;
@@ -210,23 +211,30 @@ private:
                                const PropertiesMap &properties,
                                const MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList);
-    ImportResult importCompileUpdate(const tinyxml2::XMLElement *node,
-                                     const std::string &projectDir,
-                                     const PropertiesMap &properties,
-                                     std::list<ItemGroupClCompile> &compileList);
-    ImportResult importCompileRemove(const tinyxml2::XMLElement *node,
-                                     const std::string &projectDir,
-                                     const PropertiesMap &properties,
-                                     std::list<ItemGroupClCompile> &compileList);
-    std::vector<std::string> expandItemSpec(const std::string &spec,
-                                            const std::string &projectDir,
-                                            const PropertiesMap &properties);
+    // Returns (original-segment, absolute-path) pairs.  The original segment is
+    // the spec after property expansion but before toAbsolute(), preserving the
+    // relative form needed to compute %(RelativeDir) in importCompile().
+    std::vector<std::pair<std::string, std::string>> expandItemSpec(const std::string &spec,
+                                                                    const std::string &projectDir,
+                                                                    const PropertiesMap &properties);
+    std::vector<std::string> expandItemSpecFiles(const std::string &spec,
+                                                 const std::string &projectDir,
+                                                 const PropertiesMap &properties);
     std::string applyMSBuildStaticFunction(const std::string &className,
                                            const std::string &member,
-                                           const std::vector<std::string> &args);
-    bool applyClCompileChild(const tinyxml2::XMLElement *e1,
+                                           const std::vector<std::string> &args,
+                                           const PropertiesMap *properties = nullptr);
+    void applyClCompileChild(const tinyxml2::XMLElement *e1,
                              const PropertiesMap &properties,
                              MetadataMap &metadata);
+    void applyClCompileUpdate(const tinyxml2::XMLElement *node,
+                              const std::string &dir,
+                              const PropertiesMap &properties,
+                              std::list<ItemGroupClCompile> &compileList);
+    void applyClCompileRemove(const tinyxml2::XMLElement *node,
+                              const std::string &dir,
+                              const PropertiesMap &properties,
+                              std::list<ItemGroupClCompile> &compileList);
     void expandMSBuildVariables(std::string &s, const PropertiesMap &properties);
     bool evalCondition(const std::string &condition, const PropertiesMap &properties);
     bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
@@ -234,7 +242,6 @@ private:
     bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
-
     void checkUnexpandedExpressions(const std::string &text, const char *context);
     bool simplifyPathWithVariables(std::string &s, const PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);

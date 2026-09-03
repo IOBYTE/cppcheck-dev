@@ -36,7 +36,6 @@
 #include <iterator>
 #include <map>
 #include <set>
-#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -335,9 +334,12 @@ static std::string applyPropertyMethod(std::string value,
             throw std::runtime_error("StartsWith requires one argument");
         if (args[0].size() > value.size())
             return "False";
-
-        // We reuse the search function locked to position index 0
-        return containsCaseInsensitive(value.substr(0, args[0].size()), args[0]) ? "True" : "False";
+        for (std::size_t i = 0; i < args[0].size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(value[i])) !=
+                std::tolower(static_cast<unsigned char>(args[0][i])))
+                return "False";
+        }
+        return "True";
     }
 
     if (caseInsensitiveStringCompare(method, "EndsWith") == 0) {
@@ -345,10 +347,13 @@ static std::string applyPropertyMethod(std::string value,
             throw std::runtime_error("EndsWith requires one argument");
         if (args[0].size() > value.size())
             return "False";
-
-        // We reuse the search function locked to the exact tail boundary offset
         const std::size_t offset = value.size() - args[0].size();
-        return containsCaseInsensitive(value.substr(offset), args[0]) ? "True" : "False";
+        for (std::size_t i = 0; i < args[0].size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(value[offset + i])) !=
+                std::tolower(static_cast<unsigned char>(args[0][i])))
+                return "False";
+        }
+        return "True";
     }
 
     if (caseInsensitiveStringCompare(method, "Trim") == 0) {
@@ -461,8 +466,8 @@ static std::string applyPropertyMethod(std::string value,
         return std::to_string(found == std::string::npos ? -1L : static_cast<long>(found));
     }
 
-    if (caseInsensitiveStringCompare(method, "PadLeft") == 0 ||
-        caseInsensitiveStringCompare(method, "PadRight") == 0) {
+    const bool isPadLeft = caseInsensitiveStringCompare(method, "PadLeft") == 0;
+    if (isPadLeft || caseInsensitiveStringCompare(method, "PadRight") == 0) {
         if (args.empty() || args.size() > 2)
             throw std::runtime_error(method + " requires one or two arguments");
         char *end = nullptr;
@@ -474,8 +479,7 @@ static std::string applyPropertyMethod(std::string value,
         if (value.size() >= width)
             return value;
         const std::string padding(width - value.size(), padChar);
-        const bool left = caseInsensitiveStringCompare(method, "PadLeft") == 0;
-        return left ? padding + value : value + padding;
+        return isPadLeft ? padding + value : value + padding;
     }
 
     throw std::runtime_error("Unhandled method '" + method + "'");
@@ -495,7 +499,7 @@ static std::string findFile(const std::string &startDirectory, const std::string
             return targetFile;
         if (currentDir.back() == '/' || (currentDir.back() == ':' && currentDir.size() == 2))
             break;
-        size_t lastSlash = currentDir.rfind('/');
+        const std::size_t lastSlash = currentDir.rfind('/');
         if (lastSlash == std::string::npos)
             break;
         currentDir.resize(lastSlash);
@@ -596,25 +600,37 @@ static std::string msbuildUnescape(const std::string &s)
     return result;
 }
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-format-attribute"
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
-#endif
-
-template<typename ... Args>
-static std::string safeFormat(const char *fmt, Args... args) {
-    const int needed = std::snprintf(nullptr, 0, fmt, args ...);
-    if (needed < 0)
-        return std::string();
-    std::vector<char> buf(static_cast<std::size_t>(needed) + 1);
-    std::snprintf(buf.data(), buf.size(), fmt, args ...);
-    return std::string(buf.data());
+static std::string stripDirectoryPart(const std::string &filename) {
+    const auto slash = filename.rfind('/');
+    return (slash != std::string::npos) ? filename.substr(slash + 1) : filename;
 }
 
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
+/// Return the stem of \p filename (basename with its final extension removed).
+/// Strips only the tail extension so "foo.targets.props" -> "foo.targets", not "foo".
+static std::string fileStem(const std::string &filename) {
+    const std::string ext = Path::getFilenameExtension(filename);
+    if (ext.empty() || filename.size() <= ext.size())
+        return filename;
+    return filename.substr(0, filename.size() - ext.size());
+}
+
+
+static bool isPathRooted(const std::string &filename) {
+    if (filename.empty())
+        return false;
+
+    // Unix-rooted or Windows-rooted path.
+    if (filename[0] == '/' || filename[0] == '\\')
+        return true;
+    // Windows drive letter: C:\..., C:/..., or drive-relative C:foo.
+    // .NET Path.IsPathRooted returns true for all three forms.
+    if (filename.size() >= 2 &&
+        std::isalpha(static_cast<unsigned char>(filename[0])) &&
+        filename[1] == ':')
+        return true;
+
+    return false;
+}
 
 static std::string getRelativePath(const std::string &absolutePath, const std::vector<std::string> &basePaths) {
     const std::string normAbs = Path::fromNativeSeparators(absolutePath);
@@ -651,14 +667,14 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
             parts.push_back(s.substr(0, shareEnd)); // "//server/share"
             pos = shareEnd + 1;
         } else if (s.size() >= 2 &&
-                   std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
+            std::isalpha(static_cast<unsigned char>(s[0])) && s[1] == ':') {
             // Drive-letter path: root is the two-character drive token "C:".
             parts.push_back(s.substr(0, 2));
             pos = 2;
             if (pos < s.size() && s[pos] == '/') ++pos;
         } else if (!s.empty() && s[0] == '/') {
             // Root-relative path: root is "/".
-            parts.push_back("/");
+            parts.emplace_back("/");
             pos = 1;
         }
         // else: relative path -- no root token is prepended.
@@ -700,7 +716,7 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
         // Find the length of the common component prefix.
         std::size_t common = 0;
         while (common < absParts.size() && common < baseParts_.size() &&
-               Path::sameFileName(absParts[common], baseParts_[common]))
+            Path::sameFileName(absParts[common], baseParts_[common]))
             ++common;
 
         if (common == 0)
@@ -720,17 +736,42 @@ static std::string getRelativePath(const std::string &absolutePath, const std::v
         if (!rel.empty())
             return rel;
     }
-    return absolutePath;
+    // No base path shares a root with absolutePath.  Return the normalized form
+    // so the caller always gets forward slashes, consistent with every other
+    // path in the property map.
+    return normAbs;
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-format-attribute"
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+
+template<typename ... Args>
+static std::string safeFormat(const char *fmt, Args... args) {
+    const int needed = std::snprintf(nullptr, 0, fmt, args ...);
+    if (needed < 0)
+        return std::string();
+    std::vector<char> buf(static_cast<std::size_t>(needed) + 1);
+    std::snprintf(buf.data(), buf.size(), fmt, args ...);
+    return std::string(buf.data());
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 // Evaluate a $([ClassName]::Method(args)) static property function.
 // Returns an empty string for unknown or unimplementable functions rather
 // than throwing, so import can continue gracefully.
 std::string ImportProject::applyMSBuildStaticFunction(const std::string &className,
                                                       const std::string &member,
-                                                      const std::vector<std::string> &args) {
+                                                      const std::vector<std::string> &args,
+                                                      const PropertiesMap *properties) {
     const auto toInt = [](const std::string &s, long long &out) -> bool {
-        if (s.empty()) return false;
+        if (s.empty())
+            return false;
         char *end = nullptr;
         out = std::strtoll(s.c_str(), &end, 10);
         return end != s.c_str() && *end == '\0';
@@ -767,10 +808,20 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     return std::to_string(a - b);
                 if (caseInsensitiveStringCompare(member, "Multiply") == 0)
                     return std::to_string(a * b);
-                if (caseInsensitiveStringCompare(member, "Divide") == 0 && b != 0)
+                if (caseInsensitiveStringCompare(member, "Divide") == 0) {
+                    if (b == 0) {
+                        debugs.emplace_back("MSBuild::Divide: division by zero");
+                        return std::string();
+                    }
                     return std::to_string(a / b);
-                if (caseInsensitiveStringCompare(member, "Modulo") == 0 && b != 0)
+                }
+                if (caseInsensitiveStringCompare(member, "Modulo") == 0) {
+                    if (b == 0) {
+                        debugs.emplace_back("MSBuild::Modulo: division by zero");
+                        return std::string();
+                    }
                     return std::to_string(a % b);
+                }
             }
             // $([MSBuild]::ValueOrDefault(value, default))
             if (caseInsensitiveStringCompare(member, "ValueOrDefault") == 0)
@@ -798,6 +849,21 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             // path of the file or "" if not found.
             if (caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0)
                 return findFile(args[1], args[0]);
+        }
+
+        // $([MSBuild]::GetPathOfFileAbove(file)) -- 1-arg form.  MSBuild uses the
+        // directory of the file being evaluated (MSBuildThisFileDirectory) as the
+        // start directory.  We read it from the supplied properties map when available;
+        // if absent (properties is null or the key is missing) findFile receives an
+        // empty start directory and returns "" without crashing.
+        if (caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0 && args.size() == 1) {
+            std::string startDir;
+            if (properties) {
+                const auto it = properties->find("MSBuildThisFileDirectory");
+                if (it != properties->end())
+                    startDir = it->second;
+            }
+            return findFile(startDir, args[0]);
         }
 
         // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) -- join segments (Path.Combine
@@ -934,44 +1000,23 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
 
     if (caseInsensitiveStringCompare(className, "System.IO.Path") == 0) {
         if (args.size() == 1) {
-            if (caseInsensitiveStringCompare(member, "GetFileName") == 0) {
-                const auto slash = args[0].find_last_of("/\\");
-                return slash != std::string::npos ? args[0].substr(slash + 1) : args[0];
-            }
-            if (caseInsensitiveStringCompare(member, "GetFileNameWithoutExtension") == 0) {
-                const auto slash = args[0].find_last_of("/\\");
-                std::string name = slash != std::string::npos ? args[0].substr(slash + 1) : args[0];
-                const auto dot = name.rfind('.');
-                return dot != std::string::npos ? name.substr(0, dot) : name;
-            }
+            const std::string filename = Path::simplifyPath(Path::fromNativeSeparators(args[0])); // FIXME can this be relative (toAbsolute)
+            if (caseInsensitiveStringCompare(member, "GetFileName") == 0)
+                return stripDirectoryPart(filename);
+            if (caseInsensitiveStringCompare(member, "GetFileNameWithoutExtension") == 0)
+                return fileStem(stripDirectoryPart(filename));
             if (caseInsensitiveStringCompare(member, "GetDirectoryName") == 0) {
-                const auto slash = args[0].find_last_of("/\\");
-                return slash != std::string::npos ? args[0].substr(0, slash) : "";
+                std::string path = Path::getPathFromFilename(filename);
+                if (!path.empty() && path.back() == '/')
+                    path.pop_back();
+                return path;
             }
-            if (caseInsensitiveStringCompare(member, "GetExtension") == 0) {
-                const auto dot = args[0].rfind('.');
-                return dot != std::string::npos ? args[0].substr(dot) : "";
-            }
-            if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0) {
-                const std::string &p = args[0];
-                const bool rooted = !p.empty() &&
-                                    (p[0] == '/' || p[0] == '\\' ||
-                                     (p.size() >= 2 &&
-                                      std::isalpha(static_cast<unsigned char>(p[0])) &&
-                                      p[1] == ':'));
-                return rooted ? "True" : "False";
-            }
-            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
-                if (args.size() != 1)
-                    return "";
-
-                const std::string &path = args[0];
-
-                if (Path::isAbsolute(path))
-                    return Path::simplifyPath(Path::fromNativeSeparators(path));
-
-                return Path::simplifyPath(toAbsolute(path));
-            }
+            if (caseInsensitiveStringCompare(member, "GetExtension") == 0)
+                return Path::getFilenameExtension(filename);
+            if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0)
+                return isPathRooted(filename) ? "True" : "False";
+            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0)
+                return toAbsolute(filename);
         }
         if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
             std::string result = args[0];
@@ -1264,6 +1309,26 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
     return "";
 }
 
+// Parse the "[ClassName]::Member" portion of a $([ClassName]::Member(...)) static
+// function reference.  On entry pos must point at '['; on return pos is advanced
+// past the member name.  className and member are appended (not assigned) so the
+// caller can initialise them to "" before the call.
+static void parseMSBuildStaticRef(const std::string &s, std::size_t &pos,
+                                  std::string &className, std::string &member)
+{
+    ++pos;  // skip '['
+    while (pos < s.size() && s[pos] != ']')
+        className += s[pos++];
+    if (pos < s.size()) ++pos;  // skip ']'
+    if (pos + 1 < s.size() && s[pos] == ':' && s[pos + 1] == ':')
+        pos += 2;  // skip '::'
+    while (pos < s.size()) {
+        const auto c = static_cast<unsigned char>(s[pos]);
+        if (!std::isalnum(c) && c != '_') break;
+        member += s[pos++];
+    }
+}
+
 // Expands $(Name) and $(Name.Method(args)) references in property value strings.
 // Unknown variables are left unexpanded. Use expandPropertyValue() to invoke.
 struct ImportProject::PropertyValueExpander {
@@ -1291,6 +1356,8 @@ struct ImportProject::PropertyValueExpander {
     }
 
     // Parses an identifier, handling nested $(...) within the name.
+    // MSBuild property/metadata/function names are [A-Za-z_][A-Za-z0-9_]*;
+    // '-' is NOT a valid identifier character and must not be consumed here.
     std::string parseIdentifier() {
         std::string result;
         while (mPos < mStr.size()) {
@@ -1299,7 +1366,7 @@ struct ImportProject::PropertyValueExpander {
                 continue;
             }
             const auto c = static_cast<unsigned char>(mStr[mPos]);
-            if (!std::isalnum(c) && c != '_' && c != '-') break;
+            if (!std::isalnum(c) && c != '_') break;
             result += mStr[mPos++];
         }
         return result;
@@ -1341,6 +1408,35 @@ struct ImportProject::PropertyValueExpander {
         return s;
     }
 
+    // Apply a no-parenthesis property access (.Length, .FullName, .DirectoryName, .Name)
+    // to `value`.  `context` is appended to the "unhandled" debug message.
+    void applyNoParenProperty(std::string &value, const std::string &method, const std::string &context) {
+        if (caseInsensitiveStringCompare(method, "Length") == 0)
+            value = std::to_string(value.size());
+        else if (caseInsensitiveStringCompare(method, "FullName") == 0)
+            value = Path::simplifyPath(value);
+        else if (caseInsensitiveStringCompare(method, "DirectoryName") == 0)
+            value = Path::getPathFromFilename(value);
+        else if (caseInsensitiveStringCompare(method, "Name") == 0)
+            value = stripDirectoryPart(Path::fromNativeSeparators(value));
+        else
+            mProject.debugs.emplace_back("unhandled property access '." + method + "'" + context);
+    }
+
+    // Parse a ')'-terminated comma-separated arg list starting at mPos (which
+    // must already point past the opening '(').  Advances mPos past the closing ')'.
+    std::vector<std::string> parseArgList() {
+        std::vector<std::string> args;
+        while (mPos < mStr.size() && mStr[mPos] != ')') {
+            args.push_back(parseArg());
+            while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
+                ++mPos;
+            if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
+        }
+        if (mPos < mStr.size()) ++mPos;  // skip ')'
+        return args;
+    }
+
     // Parses and evaluates $(Name[.Method(args)...]) starting at mPos.
     // Also handles $([ClassName]::Method(args)) static property functions.
     // If the variable is unknown the token is left unchanged and mPos advances past it.
@@ -1350,35 +1446,18 @@ struct ImportProject::PropertyValueExpander {
 
         // $([ClassName]::Method(args)) -- static property function
         if (mPos < mStr.size() && mStr[mPos] == '[') {
-            ++mPos;  // skip '['
-            std::string className;
-            while (mPos < mStr.size() && mStr[mPos] != ']')
-                className += mStr[mPos++];
-            if (mPos < mStr.size()) ++mPos;  // skip ']'
-            if (mPos + 1 < mStr.size() && mStr[mPos] == ':' && mStr[mPos + 1] == ':')
-                mPos += 2;  // skip '::'
-            std::string member;
-            while (mPos < mStr.size()) {
-                const auto c = static_cast<unsigned char>(mStr[mPos]);
-                if (!std::isalnum(c) && c != '_') break;
-                member += mStr[mPos++];
-            }
+            std::string className, member;
+            parseMSBuildStaticRef(mStr, mPos, className, member);
             std::vector<std::string> args;
             // Skip optional whitespace between method name and '(' -- legal in MSBuild.
             while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
                 ++mPos;
             if (mPos < mStr.size() && mStr[mPos] == '(') {
                 ++mPos;  // skip '('
-                while (mPos < mStr.size() && mStr[mPos] != ')') {
-                    args.push_back(parseArg());
-                    while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
-                        ++mPos;
-                    if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
-                }
-                if (mPos < mStr.size()) ++mPos;  // skip inner ')'
+                args = parseArgList();
             }
             mChanged = true;
-            std::string value = mProject.applyMSBuildStaticFunction(className, member, args);
+            std::string value = mProject.applyMSBuildStaticFunction(className, member, args, &mVars);
             // Handle optional .Property or .Method(args) chain on the result,
             // e.g. $([System.IO.FileInfo]::new('path').DirectoryName).
             while (mPos < mStr.size() && mStr[mPos] == '.') {
@@ -1390,30 +1469,11 @@ struct ImportProject::PropertyValueExpander {
                     chainMethod += mStr[mPos++];
                 }
                 if (mPos >= mStr.size() || mStr[mPos] != '(') {
-                    if (caseInsensitiveStringCompare(chainMethod, "Length") == 0)
-                        value = std::to_string(value.size());
-                    else if (caseInsensitiveStringCompare(chainMethod, "FullName") == 0)
-                        value = Path::simplifyPath(value);
-                    else if (caseInsensitiveStringCompare(chainMethod, "DirectoryName") == 0)
-                        value = Path::getPathFromFilename(value);
-                    else if (caseInsensitiveStringCompare(chainMethod, "Name") == 0) {
-                        const std::string p = Path::fromNativeSeparators(value);
-                        const auto sl = p.rfind('/');
-                        value = (sl != std::string::npos) ? p.substr(sl + 1) : p;
-                    } else {
-                        mProject.debugs.emplace_back("unhandled property access '." + chainMethod + "' after static function");
-                    }
-                    continue;  // allow further .Method() segments on the result
+                    applyNoParenProperty(value, chainMethod, " after static function");
+                    continue;
                 }
                 ++mPos;  // skip '('
-                std::vector<std::string> chainArgs;
-                while (mPos < mStr.size() && mStr[mPos] != ')') {
-                    chainArgs.push_back(parseArg());
-                    while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
-                        ++mPos;
-                    if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
-                }
-                if (mPos < mStr.size()) ++mPos;  // skip ')'
+                std::vector<std::string> chainArgs = parseArgList();
                 try {
                     value = applyPropertyMethod(value, chainMethod, chainArgs);
                 } catch (const std::exception &e) {
@@ -1449,30 +1509,11 @@ struct ImportProject::PropertyValueExpander {
             }
             if (mPos >= mStr.size() || mStr[mPos] != '(') {
                 // Property access without parentheses (e.g. $(Foo.Length)).
-                if (caseInsensitiveStringCompare(method, "Length") == 0)
-                    value = std::to_string(value.size());
-                else if (caseInsensitiveStringCompare(method, "FullName") == 0)
-                    value = Path::simplifyPath(value);
-                else if (caseInsensitiveStringCompare(method, "DirectoryName") == 0)
-                    value = Path::getPathFromFilename(value);
-                else if (caseInsensitiveStringCompare(method, "Name") == 0) {
-                    const std::string p = Path::fromNativeSeparators(value);
-                    const auto sl = p.rfind('/');
-                    value = (sl != std::string::npos) ? p.substr(sl + 1) : p;
-                } else {
-                    mProject.debugs.emplace_back("unhandled property access '." + method + "' on '" + name + "'");
-                }
-                continue;  // allow further .Method() segments on the result
+                applyNoParenProperty(value, method, " on '" + name + "'");
+                continue;
             }
             ++mPos;  // skip '('
-            std::vector<std::string> args;
-            while (mPos < mStr.size() && mStr[mPos] != ')') {
-                args.push_back(parseArg());
-                while (mPos < mStr.size() && std::isspace(static_cast<unsigned char>(mStr[mPos])))
-                    ++mPos;
-                if (mPos < mStr.size() && mStr[mPos] == ',') ++mPos;
-            }
-            if (mPos < mStr.size()) ++mPos;  // skip ')'
+            std::vector<std::string> args = parseArgList();
             try {
                 value = applyPropertyMethod(value, method, args);
             } catch (const std::exception &e) {
@@ -1661,26 +1702,12 @@ bool ImportProject::importCompileCommands(std::istream &istr)
     return true;
 }
 
-/// Return the stem of \p filename (basename with its final extension removed).
-/// Strips only the tail extension so "foo.targets.props" -> "foo.targets", not "foo".
-static std::string fileStem(const std::string &filename) {
-    const std::string ext = Path::getFilenameExtension(filename);
-    if (ext.empty() || filename.size() <= ext.size())
-        return filename;
-    return filename.substr(0, filename.size() - ext.size());
-}
-
 void ImportProject::setSolution(const std::string &filename, PropertiesMap &properties) {
     const std::string absolutePath = toAbsolute(filename);
     properties["SolutionDir"] = Path::getPathFromFilename(absolutePath);
     properties["SolutionExt"] = Path::getFilenameExtensionInLowerCase(absolutePath);
     properties["SolutionPath"] = absolutePath;
-
-    // Path::stripDirectoryPart doesn't work on windows with unix paths
-    // absolutePath is already normalized to '/' by toAbsolute()
-    const auto slash = absolutePath.rfind('/');
-    properties["SolutionFileName"] = (slash != std::string::npos) ? absolutePath.substr(slash + 1) : absolutePath;
-
+    properties["SolutionFileName"] = stripDirectoryPart(absolutePath);
     properties["SolutionName"] = fileStem(properties["SolutionFileName"]);
 }
 
@@ -1694,10 +1721,8 @@ bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
         std::list<ProjectConfiguration> projectConfigurationList;
         std::list<ItemGroupClCompile> compileList;
         const ImportResult result = importPropsOrTargets(directorySolutionProps, properties, data, compileList, projectConfigurationList, stack);
-        if (result > ImportResult::NotResolvable) {
+        if (result > ImportResult::NotResolvable)
             debugs.emplace_back("Could not fully import \"" + directorySolutionProps + "\" - " + importResultStr(result) + " (continuing)");
-            return false;
-        }
     }
     return true;
 }
@@ -1722,13 +1747,18 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     }
     stripCR(line);
 
+    // Strip UTF-8 BOM (\xEF\xBB\xBF) when present.  Visual Studio writes it as a
+    // 3-byte prefix on the first content line, not on a line of its own, so we
+    // remove the bytes here rather than skipping to a second line.
+    if (line.size() >= 3 &&
+        static_cast<unsigned char>(line[0]) == 0xEF &&
+        static_cast<unsigned char>(line[1]) == 0xBB &&
+        static_cast<unsigned char>(line[2]) == 0xBF)
+        line.erase(0, 3);
+
     if (!startsWith(line, "Microsoft Visual Studio Solution File")) {
-        // Skip BOM
-        if (!std::getline(istr, line) || !startsWith(line, "Microsoft Visual Studio Solution File")) {
-            errors.emplace_back("Visual Studio solution file header not found");
-            return false;
-        }
-        stripCR(line);
+        errors.emplace_back("Visual Studio solution file header not found");
+        return false;
     }
 
     PropertiesMap solutionVariables;
@@ -1760,16 +1790,20 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         //   Project("{TypeGUID}") = "DisplayName", "RelativePath", "{ProjGUID}"
         // The separator between display name and path is the first ", " after ") = ".
         const std::string::size_type eqMark = line.find(") = \"");
-        const std::string::size_type searchStart = (eqMark != std::string::npos)
-            ? line.find("\", \"", eqMark) + 3
-            : 0;
-        const std::string::size_type pos = line.find(".vcxproj", searchStart);
-        if (pos == std::string::npos)
+        const std::string::size_type innerFind = (eqMark != std::string::npos)
+            ? line.find("\", \"", eqMark)
+            : std::string::npos;
+        const std::string::size_type searchStart = (innerFind != std::string::npos) ? innerFind + 3 : 0;
+        // searchStart points to the opening quote of the path field; extract it
+        // and check the extension properly rather than searching for a substring.
+        if (searchStart >= line.size() || line[searchStart] != '\"')
             continue;
-        const std::string::size_type pos1 = line.rfind('\"',pos);
-        if (pos1 == std::string::npos)
+        const std::string::size_type pathEnd = line.find('\"', searchStart + 1);
+        if (pathEnd == std::string::npos)
             continue;
-        std::string vcxproj(line.substr(pos1+1, pos-pos1+7));
+        std::string vcxproj = line.substr(searchStart + 1, pathEnd - searchStart - 1);
+        if (Path::getFilenameExtensionInLowerCase(vcxproj) != ".vcxproj")
+            continue;
         vcxproj = Path::toNativeSeparators(std::move(vcxproj));
         vcxproj = toAbsolute(vcxproj, solutionDir, solutionVariables);
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
@@ -1927,24 +1961,9 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
         text == "$(VCTargetsPath)/Microsoft.Cpp.Default.props")
         return;
 
-    // Depth-counting scan so that nested expressions like $(Foo$(Bar)) report
-    // the full name "Foo$(Bar)" rather than truncating at the first ')'.
-    const auto findClosingParen = [&](std::string::size_type start) -> std::string::size_type {
-        int depth = 1;
-        for (std::string::size_type i = start; i < text.size(); ++i) {
-            if (text[i] == '(')
-                ++depth;
-            else if (text[i] == ')') {
-                if (--depth == 0)
-                    return i;
-            }
-        }
-        return std::string::npos;
-    };
-
     std::string::size_type pos = 0;
     while ((pos = text.find("$(", pos)) != std::string::npos) {
-        const std::string::size_type end = findClosingParen(pos + 2);
+        const std::string::size_type end = findMatchingParen(text, pos + 1);
         if (end == std::string::npos)
             break;
         const std::string propName = text.substr(pos + 2, end - pos - 2);
@@ -1960,7 +1979,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
     }
     pos = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
-        const std::string::size_type end = findClosingParen(pos + 2);
+        const std::string::size_type end = findMatchingParen(text, pos + 1);
         if (end == std::string::npos)
             break;
         std::stringstream message;
@@ -1989,33 +2008,53 @@ class MSBuildVersion {
 public:
     MSBuildVersion() = default;
 
-    /** Parse a version string ("17.0", "16.11.2", "v14.0").
-     *  Returns an empty (invalid) instance if \p s is not a valid version. */
+    /** Parse a version string ("17.0", "16.11.2", "v14.0", "17.0.0-preview.1").
+     *  Rules applied in order:
+     *    1. Strip a single leading 'v' or 'V'.
+     *    2. Truncate at the first '-' or '+' (semver pre-release / build-metadata).
+     *    3. Split the remainder on '.' and parse each segment as a non-negative integer.
+     *    4. Reject any component that is empty, contains whitespace, or is not a
+     *       valid decimal integer (strtol would silently accept leading whitespace
+     *       so we check explicitly).
+     *  Returns an empty (invalid) instance on any parse failure. */
     static MSBuildVersion parse(const std::string &s) {
         if (s.empty())
             return MSBuildVersion();
 
+        // Rule 1: optional leading 'v'/'V'.
         std::size_t pos = (s[0] == 'v' || s[0] == 'V') ? 1 : 0;
         if (pos == s.size())
             return MSBuildVersion();
 
+        // Rule 2: stop at the first pre-release or build-metadata separator.
+        const std::size_t sep = s.find_first_of("-+", pos);
+        const std::size_t limit = (sep == std::string::npos) ? s.size() : sep;
+
         MSBuildVersion ver;
-        while (pos < s.size()) {
+        while (pos < limit) {
             const std::size_t dot = s.find('.', pos);
-            const std::size_t end = (dot == std::string::npos) ? s.size() : dot;
+            const std::size_t end = (dot == std::string::npos || dot > limit) ? limit : dot;
+
+            // Rule 4a: reject empty components (e.g. "17..0" or trailing dot).
             if (end == pos)
                 return MSBuildVersion();
 
+            // Rule 4b: reject leading whitespace -- strtol silently skips it.
+            if (std::isspace(static_cast<unsigned char>(s[pos])))
+                return MSBuildVersion();
+
+            // Rule 3: parse the numeric component.
             const std::string part = s.substr(pos, end - pos);
             char *endPtr = nullptr;
             const long value = std::strtol(part.c_str(), &endPtr, 10);
 
-            if (endPtr != part.c_str() && *endPtr == '\0')
-                ver.mComponents.push_back(static_cast<int>(value));
-            else
+            // Rule 4c: all characters must have been consumed and the value non-negative.
+            if (endPtr == part.c_str() || *endPtr != '\0' || value < 0)
                 return MSBuildVersion();
 
-            if (dot == std::string::npos)
+            ver.mComponents.push_back(static_cast<int>(value));
+
+            if (dot == std::string::npos || dot >= limit)
                 break;
             pos = dot + 1;
         }
@@ -2138,8 +2177,11 @@ private:
         skipWhitespace();
         if (mCondition.size() - mPos < word.size())
             return false;
-        if (caseInsensitiveStringCompare(mCondition.substr(mPos, word.size()), word) != 0)
-            return false;
+        for (std::size_t i = 0; i < word.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(mCondition[mPos + i])) !=
+                std::tolower(static_cast<unsigned char>(word[i])))
+                return false;
+        }
 
         const std::size_t end = mPos + word.size();
         if (end < mCondition.size() &&
@@ -2332,7 +2374,8 @@ private:
                 continue;
             }
             const auto c = static_cast<unsigned char>(mCondition[mPos]);
-            if (!std::isalnum(c) && c != '_' && c != '-')
+            // MSBuild identifiers are [A-Za-z_][A-Za-z0-9_]* — '-' is not valid.
+            if (!std::isalnum(c) && c != '_')
                 break;
             result += mCondition[mPos++];
         }
@@ -2346,19 +2389,8 @@ private:
 
         // $([ClassName]::Method(args)) -- static property function
         if (mPos < mCondition.size() && mCondition[mPos] == '[') {
-            ++mPos;  // skip '['
-            std::string className;
-            while (mPos < mCondition.size() && mCondition[mPos] != ']')
-                className += mCondition[mPos++];
-            if (mPos < mCondition.size()) ++mPos;  // skip ']'
-            if (mPos + 1 < mCondition.size() && mCondition[mPos] == ':' && mCondition[mPos + 1] == ':')
-                mPos += 2;  // skip '::'
-            std::string member;
-            while (mPos < mCondition.size()) {
-                const auto c = static_cast<unsigned char>(mCondition[mPos]);
-                if (!std::isalnum(c) && c != '_') break;
-                member += mCondition[mPos++];
-            }
+            std::string className, member;
+            parseMSBuildStaticRef(mCondition, mPos, className, member);
             std::vector<std::string> args;
             skipWhitespace();  // allow space between method name and '('
             if (mPos < mCondition.size() && mCondition[mPos] == '(') {
@@ -2372,8 +2404,40 @@ private:
                     expect(")");
                 }
             }
+            std::string value = mEvaluate ? mProject.applyMSBuildStaticFunction(className, member, args, &mVariables) : std::string();
+            // Optional .Property / .Method(args) chain on the static-function result.
+            while (true) {
+                skipWhitespace();
+                if (!match("."))
+                    break;
+                const std::string chainMethod = parseIdentifier();
+                if (!match("(")) {
+                    if (mEvaluate) {
+                        if (caseInsensitiveStringCompare(chainMethod, "Length") == 0)
+                            value = std::to_string(value.size());
+                        else if (caseInsensitiveStringCompare(chainMethod, "FullName") == 0)
+                            value = Path::simplifyPath(value);
+                        else if (caseInsensitiveStringCompare(chainMethod, "DirectoryName") == 0)
+                            value = Path::getPathFromFilename(value);
+                        else if (caseInsensitiveStringCompare(chainMethod, "Name") == 0)
+                            value = stripDirectoryPart(Path::fromNativeSeparators(value));
+                        else
+                            mProject.debugs.emplace_back("unhandled property access '." + chainMethod + "' after static function in condition");
+                    }
+                    continue;
+                }
+                std::vector<std::string> chainArgs;
+                skipWhitespace();
+                if (!match(")")) {
+                    do {
+                        chainArgs.push_back(parseValue());
+                    } while (match(","));
+                    expect(")");
+                }
+                value = mEvaluate ? applyPropertyMethod(std::move(value), chainMethod, chainArgs) : std::string();
+            }
             expect(")");  // outer closing paren of $(...)
-            return mEvaluate ? mProject.applyMSBuildStaticFunction(className, member, args) : std::string();
+            return value;
         }
 
         std::string value = getPropertyValue(parseIdentifier());
@@ -2385,10 +2449,20 @@ private:
 
             const std::string method = parseIdentifier();
             if (!match("(")) {
-                // Property access without parentheses (e.g. $(Foo.Length)).
-                if (mEvaluate && caseInsensitiveStringCompare(method, "Length") == 0)
-                    value = std::to_string(value.size());
-                break;
+                // Property access without parentheses (e.g. $(Foo.Length), $(Foo.Name)).
+                if (mEvaluate) {
+                    if (caseInsensitiveStringCompare(method, "Length") == 0)
+                        value = std::to_string(value.size());
+                    else if (caseInsensitiveStringCompare(method, "FullName") == 0)
+                        value = Path::simplifyPath(value);
+                    else if (caseInsensitiveStringCompare(method, "DirectoryName") == 0)
+                        value = Path::getPathFromFilename(value);
+                    else if (caseInsensitiveStringCompare(method, "Name") == 0)
+                        value = stripDirectoryPart(Path::fromNativeSeparators(value));
+                    else
+                        mProject.debugs.emplace_back("unhandled property access '." + method + "' in condition");
+                }
+                continue;
             }
             std::vector<std::string> args;
             skipWhitespace();
@@ -2398,7 +2472,7 @@ private:
                 } while (match(","));
                 expect(")");
             }
-            value = mEvaluate ? applyMethod(value, method, args) : std::string();
+            value = mEvaluate ? applyPropertyMethod(std::move(value), method, args) : std::string();
         }
 
         expect(")");
@@ -2407,10 +2481,18 @@ private:
 
     std::string parseExists() {
         expect("(");
-        const std::string filename = parseValue();
+        std::string path = parseValue();
         expect(")");
 
-        std::string path = filename;
+        // Apply the same normalization used by toAbsolute() / importPropsOrTargets():
+        // 1. Normalize native separators so Path::isAbsolute() and rfind('/') work.
+        path = Path::fromNativeSeparators(std::move(path));
+        // 2. If any $(Property) survived expansion (unknown property), we cannot
+        //    resolve the path -- return "False" rather than querying the filesystem
+        //    with a literal "$(...)" in the name.
+        if (path.find("$(") != std::string::npos)
+            return "False";
+        // 3. Resolve relative paths against the file containing this condition.
         if (!Path::isAbsolute(path)) {
             auto it = mVariables.find("MSBuildThisFileDirectory");
             if (it == mVariables.end())
@@ -2418,6 +2500,8 @@ private:
             if (it != mVariables.end())
                 path = it->second + path;
         }
+        // 4. Canonicalize: collapse . / .. and remove double slashes.
+        path = Path::simplifyPath(std::move(path));
 
         return (Path::isFile(path) || Path::isDirectory(path)) ? "True" : "False";
     }
@@ -2449,11 +2533,6 @@ private:
         return expander.expand();
     }
 
-    static std::string applyMethod(std::string value,
-                                   const std::string &method,
-                                   const std::vector<std::string> &args) {
-        return applyPropertyMethod(std::move(value), method, args);
-    }
 
     bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const {
         if (op == "==" || op == "!=") {
@@ -2593,12 +2672,6 @@ namespace {
         return ret;
     }
 
-    /// Return the filename (basename) component of a forward-slash-normalised path.
-    std::string fileBasename(const std::string &path) {
-        const auto pos = path.rfind('/');
-        return (pos != std::string::npos) ? path.substr(pos + 1) : path;
-    }
-
     /// Return \p path with its root component stripped.
     /// The path must already be normalised to forward slashes.
     /// UNC paths  "//server/share/foo/"  ->  "foo/"
@@ -2644,7 +2717,7 @@ namespace {
             // Normalize once so all subsequent path ops can assume '/' separators.
             const std::string nfilename = Path::simplifyPath(Path::fromNativeSeparators(filename));
             properties["MSBuildThisFileFullPath"] = nfilename;
-            const std::string thisFile = fileBasename(nfilename);
+            const std::string thisFile = stripDirectoryPart(nfilename);
             properties["MSBuildThisFile"] = thisFile;
             properties["MSBuildThisFileName"] = fileStem(thisFile);
             properties["MSBuildThisFileDirectory"] = Path::getPathFromFilename(nfilename);
@@ -2791,7 +2864,9 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     {
         std::string::size_type p = 0;
         while ((p = original.find("%(", p)) != std::string::npos) {
-            const std::string::size_type e = original.find(')', p);
+            // Use findMatchingParen so nested parens inside a metadata value are
+            // handled correctly.  p points at '%'; p+1 is the opening '('.
+            const std::string::size_type e = findMatchingParen(original, p + 1);
             if (e == std::string::npos) break;
             const std::string key = original.substr(p + 2, e - p - 2);
             const auto it = metadata.find(key);
@@ -2806,7 +2881,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     findAndReplace(text, metaSelfRef, original);
     std::string::size_type pos = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
-        const std::string::size_type end = text.find(')', pos);
+        const std::string::size_type end = findMatchingParen(text, pos + 1);
         if (end == std::string::npos)
             break;
         const std::string key = text.substr(pos + 2, end - pos - 2);
@@ -2842,7 +2917,7 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     {
         std::string::size_type p = 0;
         while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
-            const std::string::size_type e = expandedOriginal.find(')', p);
+            const std::string::size_type e = findMatchingParen(expandedOriginal, p + 1);
             if (e == std::string::npos) break;
             const std::string key = expandedOriginal.substr(p + 2, e - p - 2);
             const auto it = metadata.find(key);
@@ -2858,7 +2933,7 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     {
         std::string::size_type pos = 0;
         while ((pos = text.find("%(", pos)) != std::string::npos) {
-            const std::string::size_type end = text.find(')', pos);
+            const std::string::size_type end = findMatchingParen(text, pos + 1);
             if (end == std::string::npos) break;
             const std::string key = text.substr(pos + 2, end - pos - 2);
             const auto it = metadata.find(key);
@@ -2876,12 +2951,12 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
 }
 
 const std::string &ImportProject::importResultStr(ImportProject::ImportResult result) {
-    static std::string ok("ok");
-    static std::string notResolvable("Not Resolvable");
-    static std::string notFound("Not Found");
-    static std::string notValid("Not Valid");
-    static std::string cycle("Cycle");
-    static std::string unknown("Unknown");
+    static const std::string ok("ok");
+    static const std::string notResolvable("Not Resolvable");
+    static const std::string notFound("Not Found");
+    static const std::string notValid("Not Valid");
+    static const std::string cycle("Cycle");
+    static const std::string unknown("Unknown");
 
     switch (result) {
     case ImportProject::ImportResult::Ok:
@@ -2898,33 +2973,24 @@ const std::string &ImportProject::importResultStr(ImportProject::ImportResult re
     return unknown;
 }
 
-static bool matchesAny(const std::string &filename,
-                       const std::vector<std::string> &paths)
-{
-    for (const std::string &p : paths) {
-        // cppcheck-suppress useStlAlgorithm
-        if (Path::sameFileName(filename, p))
-            return true;
-    }
-    return false;
-}
-
-bool ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
+void ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
                                         const PropertiesMap &properties,
                                         MetadataMap &metadata)
 {
     const char *text = e1->GetText();
     if (!text)
-        return false;
+        return;
     if (hasName(e1, "ExcludedFromBuild", properties)) {
         std::string val(text);
         expandMSBuildVariables(val, properties);
-        return caseInsensitiveStringCompare(val, "true") == 0;
+        metadata["ExcludedFromBuild"] = std::move(val);
+        return;
     }
     static const char *const METADATA_KEYS[] = {
         "AdditionalIncludeDirectories",
         "ForcedIncludeFiles",
         "PreprocessorDefinitions",
+        "UndefinePreprocessorDefinitions",
         "LanguageStandard",
         "LanguageStandard_C",
         "AdditionalOptions",
@@ -2935,25 +3001,162 @@ bool ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
         if (hasName(e1, key, properties)) {
             auto &v = metadata[key];
             v = getMetadata(e1, properties, metadata, v);
-            return false;
+            return;
         }
     }
-    return false;
+}
+
+static void applyAdditionalOptions(MetadataMap &metadata)
+{
+    const std::string &additionalOptions = metadata["AdditionalOptions"];
+    if (additionalOptions.empty())
+        return;
+
+    std::vector<std::string> args;
+    std::string arg;
+    bool quoted = false;
+
+    for (std::size_t i = 0; i < additionalOptions.size(); ++i) {
+        const char c = additionalOptions[i];
+
+        if (c == '"') {
+            quoted = !quoted;
+        } else if (std::isspace(static_cast<unsigned char>(c)) && !quoted) {
+            if (!arg.empty()) {
+                args.emplace_back(std::move(arg));
+                arg.clear();
+            }
+        } else {
+            arg += c;
+        }
+    }
+
+    if (!arg.empty())
+        args.emplace_back(std::move(arg));
+
+    for (std::size_t i = 0; i < args.size(); ++i) {
+            const std::string &option = args[i];
+
+            if (option.size() >= 2 &&
+                (option[0] == '/' || option[0] == '-') &&
+                (option[1] == 'D' || option[1] == 'd')) {
+
+                std::string define = option.substr(2);
+
+                // /D NAME
+                if (define.empty() && i + 1 < args.size())
+                    define = args[++i];
+
+                if (!define.empty()) {
+                    if (!metadata["PreprocessorDefinitions"].empty())
+                        metadata["PreprocessorDefinitions"] += ';';
+                    metadata["PreprocessorDefinitions"] += define;
+                }
+
+            } else if (option.size() >= 2 &&
+                (option[0] == '/' || option[0] == '-') &&
+                (option[1] == 'I' || option[1] == 'i')) {
+
+                std::string path = option.substr(2);
+
+                // /I path
+                if (path.empty() && i + 1 < args.size())
+                    path = args[++i];
+
+                if (!path.empty()) {
+                    if (!metadata["AdditionalIncludeDirectories"].empty())
+                        metadata["AdditionalIncludeDirectories"] += ';';
+                    metadata["AdditionalIncludeDirectories"] += path;
+                }
+            } else if (option == "/std:c++11" || option == "-std=c++11") {
+                metadata["LanguageStandard"] = "stdcpp11";
+            } else if (option == "/std:c++14" || option == "-std=c++14") {
+                metadata["LanguageStandard"] = "stdcpp14";
+            } else if (option == "/std:c++17" || option == "-std=c++17") {
+                metadata["LanguageStandard"] = "stdcpp17";
+            } else if (option == "/std:c++20" || option == "-std=c++20") {
+                metadata["LanguageStandard"] = "stdcpp20";
+            } else if (option == "/std:c++23" || option == "-std=c++23") {
+                metadata["LanguageStandard"] = "stdcpp23";
+            } else if (option == "/std:c++latest" || option == "-std=c++latest") {
+                metadata["LanguageStandard"] = "stdcpplatest";
+            } else if (option == "/std:c11" || option == "-std=c11") {
+                metadata["LanguageStandard_C"] = "stdc11";
+            } else if (option == "/std:c17" || option == "-std=c17") {
+                metadata["LanguageStandard_C"] = "stdc17";
+            } else if (option == "/std:clatest" || option == "-std=clatest") {
+                metadata["LanguageStandard_C"] = "stdclatest";
+        }
+    }
+}
+
+std::vector<std::string> ImportProject::expandItemSpecFiles(const std::string &spec,
+                                                            const std::string &projectDir,
+                                                            const PropertiesMap &properties)
+{
+    const std::vector<std::pair<std::string, std::string>> specs = expandItemSpec(spec, projectDir, properties);
+    std::vector<std::string> files;
+    files.reserve(specs.size());
+    for (const std::pair<std::string, std::string> &p : specs)
+        files.push_back(p.second);
+    return files;
+}
+
+void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
+                                         const std::string &dir,
+                                         const PropertiesMap &properties,
+                                         std::list<ItemGroupClCompile> &compileList) {
+    const char *update = node->Attribute("Update");
+    if (!update)
+        return;
+
+    const std::vector<std::string> files = expandItemSpecFiles(update, dir, properties);
+
+    for (ItemGroupClCompile &compile : compileList) {
+        if (std::find(files.begin(), files.end(), compile.filename) == files.end())
+            continue;
+
+        for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
+            applyClCompileChild(child, properties, compile.metadata);
+
+        applyAdditionalOptions(compile.metadata);
+    }
+}
+
+void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
+                                         const std::string &dir,
+                                         const PropertiesMap &properties,
+                                         std::list<ItemGroupClCompile> &compileList) {
+    const char *remove = node->Attribute("Remove");
+    if (!remove)
+        return;
+
+    const std::vector<std::string> files = expandItemSpecFiles(remove, dir, properties);
+
+    for (auto it = compileList.begin(); it != compileList.end();) {
+        if (std::find(files.begin(), files.end(), it->filename) != files.end())
+            it = compileList.erase(it);
+        else
+            ++it;
+    }
 }
 
 // Expand a semicolon-separated MSBuild item spec (possibly containing
 // $(Property) references) into a list of resolved absolute paths.
 // Segments containing glob wildcards (* ?) are logged to debugs and omitted.
-std::vector<std::string> ImportProject::expandItemSpec(const std::string &spec,
-                                                       const std::string &projectDir,
-                                                       const PropertiesMap &properties)
+std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(const std::string &spec,
+                                                                               const std::string &projectDir,
+                                                                               const PropertiesMap &properties)
 {
     // Expand property references so that values like "$(MyFiles)" that resolve
     // to "a.cpp;b.cpp" are split correctly after substitution.
     std::string expanded = spec;
     expandMSBuildVariables(expanded, properties);
 
-    std::vector<std::string> result;
+    // Each entry is (trimmed-spec-segment, absolute-path).  The trimmed segment
+    // retains the original relative form (e.g. "..\src\foo.cpp") so callers can
+    // derive %(RelativeDir) without losing the caller's relative directory form.
+    std::vector<std::pair<std::string, std::string>> result;
     std::string seg;
     for (std::size_t i = 0; i <= expanded.size(); ++i) {
         const char c = (i < expanded.size()) ? expanded[i] : ';';
@@ -2968,7 +3171,7 @@ std::vector<std::string> ImportProject::expandItemSpec(const std::string &spec,
                     trimmed.find('?') != std::string::npos) {
                     debugs.emplace_back("ClCompile item glob not supported, skipped: '" + trimmed + "'");
                 } else {
-                    result.push_back(toAbsolute(trimmed, projectDir, properties));
+                    result.push_back(std::make_pair(trimmed, toAbsolute(trimmed, projectDir, properties)));
                 }
             }
             seg.clear();
@@ -2988,167 +3191,84 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
     if (!include)
         return ImportResult::NotFound;
 
-    std::string toInclude = toAbsolute(include, projectDir, properties);
-    if (!Path::acceptFile(toInclude))
+    // Include may be a semicolon-separated list; expandItemSpec resolves each segment.
+    const std::vector<std::pair<std::string, std::string>> specs = expandItemSpec(include, projectDir, properties);
+    if (specs.empty())
         return ImportResult::NotFound;
 
-    ItemGroupClCompile compile(toInclude);
-    // a file with no override of its own inherits the ItemDefinitionGroup value outright
-    compile.metadata = metadata;
-    bool excludedFromBuild = false;
-
-    for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-        if (applyClCompileChild(e1, properties, compile.metadata)) {
-            excludedFromBuild = true;
-            break;
-        }
-    }
-
-    if (!compile.metadata["AdditionalOptions"].empty()) {
-        std::vector<std::string> args;
-        std::string arg;
-        bool quoted = false;
-        const std::string &additionalOptions = compile.metadata["AdditionalOptions"];
-
-        for (std::size_t i = 0; i < additionalOptions.size(); ++i) {
-            const char c = additionalOptions[i];
-
-            if (c == '"') {
-                quoted = !quoted;
-            } else if (std::isspace(static_cast<unsigned char>(c)) && !quoted) {
-                if (!arg.empty()) {
-                    args.emplace_back(std::move(arg));
-                    arg.clear();
-                }
-            } else {
-                arg += c;
-            }
-        }
-
-        if (!arg.empty())
-            args.emplace_back(std::move(arg));
-
-        for (std::size_t i = 0; i < args.size(); ++i) {
-            const std::string &option = args[i];
-
-            if (option.size() >= 2 &&
-                (option[0] == '/' || option[0] == '-') &&
-                (option[1] == 'D' || option[1] == 'd')) {
-
-                std::string define = option.substr(2);
-
-                // /D NAME
-                if (define.empty() && i + 1 < args.size())
-                    define = args[++i];
-
-                if (!define.empty()) {
-                    if (!compile.metadata["PreprocessorDefinitions"].empty())
-                        compile.metadata["PreprocessorDefinitions"] += ';';
-                    compile.metadata["PreprocessorDefinitions"] += define;
-                }
-
-            } else if (option.size() >= 2 &&
-                       (option[0] == '/' || option[0] == '-') &&
-                       (option[1] == 'I' || option[1] == 'i')) {
-
-                std::string path = option.substr(2);
-
-                // /I path
-                if (path.empty() && i + 1 < args.size())
-                    path = args[++i];
-
-                if (!path.empty()) {
-                    if (!compile.metadata["AdditionalIncludeDirectories"].empty())
-                        compile.metadata["AdditionalIncludeDirectories"] += ';';
-                    compile.metadata["AdditionalIncludeDirectories"] += path;
-                }
-            } else if (option == "/std:c++11" || option == "-std=c++11") {
-                compile.metadata["LanguageStandard"] = "stdcpp11";
-            } else if (option == "/std:c++14" || option == "-std=c++14") {
-                compile.metadata["LanguageStandard"] = "stdcpp14";
-            } else if (option == "/std:c++17" || option == "-std=c++17") {
-                compile.metadata["LanguageStandard"] = "stdcpp17";
-            } else if (option == "/std:c++20" || option == "-std=c++20") {
-                compile.metadata["LanguageStandard"] = "stdcpp20";
-            } else if (option == "/std:c++23" || option == "-std=c++23") {
-                compile.metadata["LanguageStandard"] = "stdcpp23";
-            } else if (option == "/std:c++latest" || option == "-std=c++latest") {
-                compile.metadata["LanguageStandard"] = "stdcpplatest";
-            } else if (option == "/std:c11" || option == "-std=c11") {
-                compile.metadata["LanguageStandard_C"] = "stdc11";
-            } else if (option == "/std:c17" || option == "-std=c17") {
-                compile.metadata["LanguageStandard_C"] = "stdc17";
-            } else if (option == "/std:clatest" || option == "-std=clatest") {
-                compile.metadata["LanguageStandard_C"] = "stdclatest";
-            }
-        }
-    }
-
-    if (!excludedFromBuild)
-        compileList.emplace_back(compile);
-
-    return ImportResult::Ok;
-}
-
-// Handle <ClCompile Update="..."> inside an ItemGroup.
-// Finds existing items in compileList whose path matches the spec and applies
-// the child-element metadata overrides.  If ExcludedFromBuild is set to true
-// the matched items are removed from the list.
-ImportProject::ImportResult ImportProject::importCompileUpdate(const tinyxml2::XMLElement *node,
-                                                               const std::string &projectDir,
-                                                               const PropertiesMap &properties,
-                                                               std::list<ItemGroupClCompile> &compileList)
-{
-    const char *update = node->Attribute("Update");
-    if (!update)
-        return ImportResult::NotFound;
-
-    const std::vector<std::string> paths = expandItemSpec(update, projectDir, properties);
-    if (paths.empty())
-        return ImportResult::NotFound;
-
-    std::vector<std::string> excludedNames;
-
-    for (ItemGroupClCompile &compile : compileList) {
-        if (!matchesAny(compile.filename, paths))
+    for (const std::pair<std::string, std::string> &spec : specs) {
+        const std::string &toInclude = spec.second;
+        if (!Path::acceptFile(toInclude))
             continue;
 
-        for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-            if (applyClCompileChild(e1, properties, compile.metadata)) {
-                excludedNames.push_back(compile.filename);
-                break;
+        ItemGroupClCompile compile(toInclude);
+        // a file with no override of its own inherits the ItemDefinitionGroup value outright
+        compile.metadata = metadata;
+
+        // Seed well-known item metadata (%(Identity), %(FullPath), %(Filename), etc.).
+        // In MSBuild these are computed from the item's identity and cannot be overridden
+        // by ItemDefinitionGroup; they are frequently referenced in AdditionalOptions,
+        // include paths, and PreprocessorDefinitions so they must be present for
+        // expandMSBuildVariables() to resolve %(Key) references correctly.
+        {
+            const std::string ext = Path::getFilenameExtensionInLowerCase(toInclude);
+            const std::string base = stripDirectoryPart(toInclude);
+            const std::string stem = fileStem(base);
+
+            // Decompose the absolute path into a root prefix and a directory suffix.
+            std::string rootDir;
+            std::size_t afterRoot = 0;
+            if (toInclude.size() >= 2 && toInclude[0] == '/' && toInclude[1] == '/') {
+                // UNC: root is "//server/share/"
+                const std::size_t srv = toInclude.find('/', 2);
+                const std::size_t shr = (srv != std::string::npos) ? toInclude.find('/', srv + 1) : std::string::npos;
+                if (shr != std::string::npos) {
+                    rootDir = toInclude.substr(0, shr + 1);
+                    afterRoot = shr + 1;
+                } else {
+                    rootDir = toInclude;
+                }
+            } else if (toInclude.size() >= 2 &&
+                       std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
+                       toInclude[1] == ':') {
+                rootDir = toInclude.substr(0, 2) + "/";
+                afterRoot = (toInclude.size() > 2 && toInclude[2] == '/') ? 3 : 2;
+            } else if (!toInclude.empty() && toInclude[0] == '/') {
+                rootDir = "/";
+                afterRoot = 1;
+            }
+            const std::size_t lastSlash = toInclude.rfind('/');
+            const std::string directory = (lastSlash != std::string::npos && lastSlash >= afterRoot)
+                                          ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
+                                          : std::string();
+
+            compile.metadata["Identity"] = toInclude;
+            compile.metadata["FullPath"] = toInclude;
+            compile.metadata["RootDir"] = rootDir;
+            compile.metadata["Filename"] = stem;
+            compile.metadata["Extension"] = ext;
+            compile.metadata["Directory"] = directory;
+            compile.metadata["RecursiveDir"] = std::string(); // empty: no wildcard was used
+            // %(RelativeDir) is the directory of the original item spec as written
+            // (after property expansion, before toAbsolute()), normalized to forward
+            // slashes and including the trailing separator.  This differs from
+            // %(Directory), which is relative to the drive/UNC root.
+            {
+                const std::string origNorm = Path::fromNativeSeparators(spec.first);
+                const std::size_t relSlash = origNorm.rfind('/');
+                compile.metadata["RelativeDir"] = (relSlash != std::string::npos)
+                                                  ? origNorm.substr(0, relSlash + 1)
+                                                  : std::string();
             }
         }
+
+        for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement())
+            applyClCompileChild(e1, properties, compile.metadata);
+
+        applyAdditionalOptions(compile.metadata);
+
+        compileList.emplace_back(std::move(compile));
     }
-
-    if (!excludedNames.empty()) {
-        compileList.remove_if([&excludedNames](const ItemGroupClCompile &c) {
-            return matchesAny(c.filename, excludedNames);
-        });
-    }
-
-    return ImportResult::Ok;
-}
-
-// Handle <ClCompile Remove="..."> inside an ItemGroup.
-// Removes every item in compileList whose path matches the semicolon-separated spec.
-ImportProject::ImportResult ImportProject::importCompileRemove(
-    const tinyxml2::XMLElement *node,
-    const std::string &projectDir,
-    const PropertiesMap &properties,
-    std::list<ItemGroupClCompile> &compileList)
-{
-    const char *remove = node->Attribute("Remove");
-    if (!remove)
-        return ImportResult::NotFound;
-
-    const std::vector<std::string> paths = expandItemSpec(remove, projectDir, properties);
-    if (paths.empty())
-        return ImportResult::NotFound;
-
-    compileList.remove_if([&paths](const ItemGroupClCompile &c) {
-        return matchesAny(c.filename, paths);
-    });
 
     return ImportResult::Ok;
 }
@@ -3176,12 +3296,14 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         debugs.resize(dbgSize);
         return r;
     }
-    std::string file = toAbsolute(projectAttribute, projectDir, properties);
-    std::string extension = Path::getFilenameExtensionInLowerCase(file);
+    const std::string file = toAbsolute(projectAttribute, projectDir, properties);
+    const std::string extension = Path::getFilenameExtensionInLowerCase(file);
     if (extension == ".props" || extension == ".targets") {
         const char *sdk = node->Attribute("Sdk");
-        if (sdk)
+        if (sdk) {
+            debugs.emplace_back("Could not import \"" + file + "\" - " + " (Sdk not supported)");
             return ImportResult::NotResolvable;
+        }
 
         // Identify well-known system files by their logical filename rather than a
         // substring search on the full path.  This avoids false positives when a
@@ -3202,9 +3324,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         if (filenameIs("Microsoft.Cpp.targets")) {
             auto it = properties.find("ForceImportBeforeCppTargets");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             // Microsoft.Common.targets (imported by Microsoft.Cpp.targets) sets
@@ -3237,9 +3360,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
 
             it = properties.find("ForceImportAfterCppTargets");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3248,9 +3372,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         if (filenameIs("Microsoft.Cpp.Default.props")) {
             auto it = properties.find("ForceImportBeforeCppDefaultProps");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             if (file.find("$(") == std::string::npos) {
@@ -3301,9 +3426,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
 
             it = properties.find("ForceImportAfterCppDefaultProps");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3315,9 +3441,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             // was already imported via the Microsoft.Cpp.Default.props handler above).
             auto it = properties.find("ForceImportBeforeCppProps");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             if (file.find("$(") != std::string::npos) {
@@ -3346,9 +3473,10 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
 
             it = properties.find("ForceImportAfterCppProps");
             if (it != properties.end()) {
-                ImportResult result = importPropsOrTargets(it->second, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                const std::string importFile = it->second;
+                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + it->second + "\" - " + importResultStr(result) + " (continuing)");
+                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3473,6 +3601,23 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
                     }
                 }
             }
+        } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
+            // Handle plain (unlabeled) or otherwise-labeled ItemGroups that contain
+            // ClCompile elements. This is the same logic as importVcxitems; .targets
+            // files from SDK-style toolchains (WinUI, CppWinRT, vcpkg, unity builds)
+            // frequently contribute source files this way.
+            if (phase == EvalPhase::Items) {
+                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
+                    if (hasName(e, "ClCompile", properties)) {
+                        if (e->Attribute("Include"))
+                            importCompile(e, propsDir, properties, metadata, compileList);
+                        else if (e->Attribute("Update"))
+                            applyClCompileUpdate(e, propsDir, properties, compileList);
+                        else if (e->Attribute("Remove"))
+                            applyClCompileRemove(e, propsDir, properties, compileList);
+                    }
+                }
+            }
         } else if (hasNameAndAttribute(node, "Import", "Project", properties)) {
             ImportResult result = importProject(node, propsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             // Non-fatal: log and continue so later elements (including
@@ -3531,9 +3676,9 @@ ImportProject::ImportResult ImportProject::importVcxitems(const std::string &ite
                         if (e->Attribute("Include"))
                             importCompile(e, itemsDir, properties, metadata, compileList);
                         else if (e->Attribute("Update"))
-                            importCompileUpdate(e, itemsDir, properties, compileList);
+                            applyClCompileUpdate(e, itemsDir, properties, compileList);
                         else if (e->Attribute("Remove"))
-                            importCompileRemove(e, itemsDir, properties, compileList);
+                            applyClCompileRemove(e, itemsDir, properties, compileList);
                     }
                 }
             }
@@ -3588,11 +3733,11 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties.emplace("DisableSpecificWarnings", "");
 
     properties["ProjectPath"] = nfilename;
-    const std::string projFileName = fileBasename(nfilename);
+    const std::string projFileName = stripDirectoryPart(nfilename);
     properties["ProjectFileName"] = projFileName;
     const std::string projName = fileStem(projFileName);
     properties["ProjectName"] = projName;
-    properties["ShortProjectName"] = projName.substr(0, std::min(projName.size(), size_t(16)));
+    properties["ShortProjectName"] = projName.substr(0, std::min(projName.size(), std::size_t(16)));
     properties["ProjectExt"] = Path::getFilenameExtensionInLowerCase(nfilename);
     properties["ProjectDir"] = Path::getPathFromFilename(nfilename);
 
@@ -3685,7 +3830,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         discoverProps.emplace("WindowsSDK_WindowsMetadata", "");
         discoverProps.emplace("WindowsSDK_LibraryPath_x64", "");
         MetadataMap discoverMeta;
-        std::list<ItemGroupClCompile> discovertCompile;
+        std::list<ItemGroupClCompile> discoverCompile;
         std::unordered_set<std::string> discoverStack;
         for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement();
              node && projectConfigurationList.empty();
@@ -3696,10 +3841,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
             } else if (hasName(node, "ImportGroup", discoverProps)) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e && projectConfigurationList.empty(); e = e->NextSiblingElement()) {
                     if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
-                        importProject(e, projectDir, discoverProps, discoverMeta, discovertCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
+                        importProject(e, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
                 }
             } else if (hasNameAndAttribute(node, "Import", "Project", discoverProps)) {
-                importProject(node, projectDir, discoverProps, discoverMeta, discovertCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
+                importProject(node, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
             }
         }
     }
@@ -3759,8 +3904,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                     debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
                                 if (result == ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
-                            } else
-                                debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
+                            } else {
+                                // A Shared ImportGroup may contain .props/.targets as well
+                                // as .vcxitems -- process them the same as a PropertySheets group.
+                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Properties);
+                                if (result > ImportResult::NotResolvable)
+                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
+                            }
                         }
                     }
                 } else {
@@ -3812,6 +3962,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                 ImportResult result = importVcxitems(file, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
                                 if (result > ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
+                            } else {
+                                // A Shared ImportGroup may contain .props/.targets as well
+                                // as .vcxitems -- process them the same as a PropertySheets group.
+                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::ItemDefs);
+                                if (result > ImportResult::NotResolvable)
+                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
                             }
                         }
                     }
@@ -3847,9 +4003,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
                         if (e->Attribute("Include"))
                             importCompile(e, projectDir, properties, metadata, compileList);
                         else if (e->Attribute("Update"))
-                            importCompileUpdate(e, projectDir, properties, compileList);
+                            applyClCompileUpdate(e, projectDir, properties, compileList);
                         else if (e->Attribute("Remove"))
-                            importCompileRemove(e, projectDir, properties, compileList);
+                            applyClCompileRemove(e, projectDir, properties, compileList);
                     }
                 }
             } else if (hasName(node, "ImportGroup", properties)) {
@@ -3867,6 +4023,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                     debugs.emplace_back("Could not fully import items \"" + file + "\" - " + importResultStr(result) + " (continuing)");
                                 if (result == ImportResult::NotResolvable)
                                     debugs.emplace_back("Could not import items \"" + file + "\" - " + importResultStr(result));
+                            } else {
+                                // A Shared ImportGroup may contain .props/.targets as well
+                                // as .vcxitems -- process them the same as a PropertySheets group.
+                                const ImportResult result = importProject(e, projectDir, properties, metadata, compileList, projectConfigurationList, importStack, EvalPhase::Items);
+                                if (result > ImportResult::NotResolvable)
+                                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
                             }
                         }
                     }
@@ -3899,6 +4061,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
         for (const ItemGroupClCompile &compile : compileList) {
             if (!fileFilters.empty() && !filtermatcher.match(compile.filename))
                 continue;
+
+            {
+                const std::string &excl = compile.get("ExcludedFromBuild");
+                if (!excl.empty() && caseInsensitiveStringCompare(excl, "true") == 0)
+                    continue;
+            }
 
             if (!guiProject.checkVsConfigs.empty()) {
                 const bool doChecking = std::any_of(guiProject.checkVsConfigs.cbegin(), guiProject.checkVsConfigs.cend(), [&](const std::string &c) {
@@ -3950,7 +4118,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     cstd = Standards::CLatest;
                 fs.standard = Standards::getC(cstd);
             } else {
-                Standards::cppstd_t cppstd = Standards::CPPLatest;
+                // MSVC defaults to C++14 when no /std: flag is set (v140 through v143).
+                Standards::cppstd_t cppstd = Standards::CPP14;
                 const std::string &languageStandard = compile.get("LanguageStandard");
                 if (languageStandard == "stdcpp11")
                     cppstd = Standards::CPP11;
@@ -3998,6 +4167,42 @@ bool ImportProject::importVcxproj(const std::string &filename,
             std::string defines = fs.defines;
             if (!compile.get("PreprocessorDefinitions").empty())
                 defines += (";" + compile.get("PreprocessorDefinitions"));
+            const std::string &undefStr = compile.get("UndefinePreprocessorDefinitions");
+            if (!undefStr.empty()) {
+                // Build a set of macro names to suppress (skip %(InheritedValues) tokens).
+                std::set<std::string> undefs;
+                std::string seg;
+                for (std::size_t i = 0; i <= undefStr.size(); ++i) {
+                    const char c = (i < undefStr.size()) ? undefStr[i] : ';';
+                    if (c == ';') {
+                        if (!seg.empty() && !startsWith(seg, "%("))
+                            undefs.insert(seg);
+                        seg.clear();
+                    } else {
+                        seg += c;
+                    }
+                }
+                // Remove matching entries from the accumulated defines string.
+                std::string filtered;
+                seg.clear();
+                for (std::size_t i = 0; i <= defines.size(); ++i) {
+                    const char c = (i < defines.size()) ? defines[i] : ';';
+                    if (c == ';') {
+                        if (!seg.empty()) {
+                            const std::string name = seg.substr(0, seg.find('='));
+                            if (undefs.find(name) == undefs.end()) {
+                                if (!filtered.empty())
+                                    filtered += ';';
+                                filtered += seg;
+                            }
+                            seg.clear();
+                        }
+                    } else {
+                        seg += c;
+                    }
+                }
+                defines = std::move(filtered);
+            }
             fsSetDefines(fs, defines);
             {
                 const auto includePathIt = properties.find("IncludePath");
