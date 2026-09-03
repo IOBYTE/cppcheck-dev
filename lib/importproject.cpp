@@ -4237,7 +4237,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     // e.g. "v146" -> substr(3)="6" -> 1900+60=1960.
                     try {
                         const int sub = std::stoi(toolset.substr(3));
-                        mscVer    = std::to_string(1900 + sub * 10);
+                        mscVer    = std::to_string(1900 + (sub * 10));
                         mscFullVer = mscVer + "00000";
                     } catch (...) {}
                 } else {

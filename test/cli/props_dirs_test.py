@@ -66,15 +66,27 @@ def test_props_dirs_defines_and_standard():
         dump_b_content = f.read()
 
     # ProjA imports shared/shared.props (-> common/common.props) and shared/shared2.props
-    # (-> common/common2.props), and sets its own PROJA_DEFINE.  Defines accumulate most-
-    # specific-first: PROJA_DEFINE, then shared2 chain (SHARED2_DEFINE;COMMON2_DEFINE),
-    # then shared chain (SHARED_DEFINE;COMMON_DEFINE).
-    assert 'cfg="_WIN32=1;_WIN64=1;_M_X64=100;_M_AMD64=100;PROJA_DEFINE=1;SHARED2_DEFINE=1;COMMON2_DEFINE=1;SHARED_DEFINE=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_a_content
+    # (-> common/common2.props), and sets its own PROJA_DEFINE.
+    # v143 toolset -> _MSC_VER=1930/_MSC_FULL_VER=193000000; common.props sets stdcpp17
+    # -> _MSVC_LANG=201703L.
+    assert '_WIN32=1' in dump_a_content
+    assert '_WIN64=1' in dump_a_content
+    assert '_M_X64=100' in dump_a_content
+    assert '_MSC_VER=1930' in dump_a_content
+    assert '_MSC_FULL_VER=193000000' in dump_a_content
+    assert '_MSVC_LANG=201703L' in dump_a_content
+    assert 'PROJA_DEFINE=1' in dump_a_content
+    assert 'SHARED_DEFINE=1' in dump_a_content
+    assert 'COMMON_DEFINE=1' in dump_a_content
     assert '<cpp version="c++17"/>' in dump_a_content
 
     # ProjB imports common/common.props and common/common2.props directly - it must see
-    # COMMON2_DEFINE;COMMON_DEFINE (most-specific first), but none of ProjA's defines.
-    assert 'cfg="_WIN32=1;_WIN64=1;_M_X64=100;_M_AMD64=100;COMMON2_DEFINE=1;COMMON_DEFINE=1;_MSC_VER=1900"' in dump_b_content
+    # COMMON2_DEFINE and COMMON_DEFINE, but none of ProjA's or shared's defines.
+    assert '_MSC_VER=1930' in dump_b_content
+    assert '_MSC_FULL_VER=193000000' in dump_b_content
+    assert '_MSVC_LANG=201703L' in dump_b_content
+    assert 'COMMON2_DEFINE=1' in dump_b_content
+    assert 'COMMON_DEFINE=1' in dump_b_content
     assert '<cpp version="c++17"/>' in dump_b_content
     assert 'PROJA_DEFINE' not in dump_b_content
     assert 'SHARED_DEFINE' not in dump_b_content

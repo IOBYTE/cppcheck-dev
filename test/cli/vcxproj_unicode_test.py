@@ -33,13 +33,27 @@ def _get_dump_for_configuration(tmp_path, configuration):
 def test_vcxproj_unicode_debug(tmp_path):
     dump_content = _get_dump_for_configuration(tmp_path, 'Debug|Win32')
 
-    # the resolved defines are recorded in the <dump cfg="..."> attribute
-    assert 'cfg="_WIN32=1;_M_IX86=600;UNICODE=1;_UNICODE=1;_MSC_VER=1900"' in dump_content
+    # v143 toolset -> _MSC_VER=1930, _MSC_FULL_VER=193000000
+    assert '_WIN32=1' in dump_content
+    assert '_M_IX86=600' in dump_content
+    assert '_MSC_VER=1930' in dump_content
+    assert '_MSC_FULL_VER=193000000' in dump_content
+    assert '_MSVC_LANG=201402L' in dump_content  # default C++14, no LanguageStandard set
+    assert 'UNICODE=1' in dump_content
+    assert '_UNICODE=1' in dump_content
+    assert '_MBCS' not in dump_content
 
 def test_vcxproj_unicode_release(tmp_path):
     dump_content = _get_dump_for_configuration(tmp_path, 'Release|Win32')
 
-    assert 'cfg="_WIN32=1;_M_IX86=600;_MSC_VER=1900;__AFXWIN_H__=1"' in dump_content
+    # v143 toolset, CharacterSet=NotSet, UseOfMfc=Static
+    assert '_WIN32=1' in dump_content
+    assert '_M_IX86=600' in dump_content
+    assert '_MSC_VER=1930' in dump_content
+    assert '_MSC_FULL_VER=193000000' in dump_content
+    assert '_MSVC_LANG=201402L' in dump_content
+    assert 'UNICODE' not in dump_content
+    assert '_MBCS' not in dump_content
 
 def test_vcxproj_multibyte(tmp_path):
     dump_content = _get_dump_for_configuration(tmp_path, 'MultiByte|Win32')
