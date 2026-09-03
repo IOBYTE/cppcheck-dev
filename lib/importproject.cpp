@@ -3242,8 +3242,14 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
             } else if (toInclude.size() >= 2 &&
                        std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
                        toInclude[1] == ':') {
-                rootDir = toInclude.substr(0, 2) + "/";
-                afterRoot = (toInclude.size() > 2 && toInclude[2] == '/') ? 3 : 2;
+                if (toInclude.size() > 2 && toInclude[2] == '/') {
+                    // DriveAbsolute: C:/foo.cpp -> RootDir = "C:/"
+                    rootDir = toInclude.substr(0, 2) + "/";
+                    afterRoot = 3;
+                } else {
+                    // DriveRelative: C:foo.cpp has no root directory
+                    afterRoot = 2;
+                }
             } else if (!toInclude.empty() && toInclude[0] == '/') {
                 rootDir = "/";
                 afterRoot = 1;
