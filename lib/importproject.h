@@ -115,6 +115,7 @@ protected:
     /** Set the project path prefix used to resolve relative paths in the project file.
      *  Normally set automatically by import(); exposed here so unit tests can exercise
      *  path-joining without needing a real file on disk. */
+    // cppcheck-suppress unusedFunction
     void setProjectPath(const std::string& p) {
         mPath = p;
     }
