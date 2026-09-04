@@ -4593,10 +4593,17 @@ bool ImportProject::importBcb6Prj(const std::string &projectFilename)
 static std::string joinRelativePath(const std::string &path1, const std::string &path2)
 {
     if (!path1.empty()) {
-        // Use classifyPath so that root-relative paths (\foo) are not misidentified
-        // as absolute on Linux after fromNativeSeparators converts them to /foo.
+        // Classify path2 to decide whether to prepend path1.
+        // Use the original string (before fromNativeSeparators) so we can tell a
+        // Windows root-relative path "\foo" (starts with backslash) from a
+        // genuine Unix absolute path "/foo" (starts with forward slash):
+        //   - UNC (\\server or //server) and DriveAbsolute (C:\...) are always absolute.
+        //   - A native forward-slash start means Unix-absolute ("/foo") or UNC ("//").
+        //   - A native backslash start means Windows root-relative ("\foo"), which on
+        //     Linux after fromNativeSeparators would look like "/foo" but is NOT absolute.
+        const bool nativelyAbsolute = !path2.empty() && path2[0] == '/';
         const PathKind pk = classifyPath(Path::fromNativeSeparators(path2));
-        if (pk != PathKind::UNC && pk != PathKind::DriveAbsolute)
+        if (!nativelyAbsolute && pk != PathKind::UNC && pk != PathKind::DriveAbsolute)
             return path1 + path2;
     }
     return path2;

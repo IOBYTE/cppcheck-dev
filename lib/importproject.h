@@ -112,6 +112,10 @@ public:
 protected:
     static void fsSetDefines(FileSettings& fs, std::string defs);
     void fsSetIncludePaths(FileSettings& fs, const std::string &basepath, const std::list<std::string> &in, const PropertiesMap &properties);
+    /** Set the project path prefix used to resolve relative paths in the project file.
+     *  Normally set automatically by import(); exposed here so unit tests can exercise
+     *  path-joining without needing a real file on disk. */
+    void setProjectPath(const std::string& p) { mPath = p; }
 
 public:
     std::list<FileSettings> fileSettings;

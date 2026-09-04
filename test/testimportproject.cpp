@@ -41,6 +41,7 @@ public:
     using ImportProject::fsSetDefines;
     using ImportProject::fsSetIncludePaths;
     using ImportProject::setRelativePaths;
+    using ImportProject::setProjectPath;
 };
 
 
@@ -79,6 +80,8 @@ private:
         TEST_CASE(importCppcheckGuiProject);
         TEST_CASE(importCppcheckGuiProjectDuplicateSuppressions);
         TEST_CASE(importCppcheckGuiProjectPremiumMisra);
+        TEST_CASE(importCppcheckGuiProjectAbsPath);    // absolute Unix path must not be prepended with mPath
+        TEST_CASE(importCppcheckGuiProjectRelPathWithBase); // relative path must be prepended with mPath
         TEST_CASE(ignorePaths);
         TEST_CASE(testCollectArgs1);
         TEST_CASE(testCollectArgs2);
@@ -594,6 +597,51 @@ private:
         ASSERT_EQUALS(true, project.importCppcheckGuiProject(istr, s, supprs));
         ASSERT_EQUALS("--misra-c-2012", s.premiumArgs);
         ASSERT(s.addons.empty());
+    }
+
+    void importCppcheckGuiProjectAbsPath() const {
+        // Regression test: absolute Unix paths in <paths> must not be prepended with the
+        // project directory (mPath).  Before the fix, joinRelativePath() classified "/foo"
+        // as RootRelative (no drive letter) and prepended mPath, yielding "/proj//foo".
+        REDIRECT;
+        constexpr char xml[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                               "<project version=\"1\">\n"
+                               "    <paths>\n"
+                               "        <dir name=\"/abs/path/file.cpp\"/>\n"
+                               "    </paths>\n"
+                               "</project>\n";
+        std::istringstream istr(xml);
+        Settings s;
+        Suppressions supprs;
+        TestImporter project;
+        project.setProjectPath("/project/dir/");
+        ASSERT_EQUALS(true, project.importCppcheckGuiProject(istr, s, supprs));
+        ASSERT_EQUALS(1, project.guiProject.pathNames.size());
+        ASSERT_EQUALS("/abs/path/file.cpp", project.guiProject.pathNames[0]);
+    }
+
+    void importCppcheckGuiProjectRelPathWithBase() const {
+        // Relative paths in <paths> must be prepended with the project directory (mPath),
+        // matching MSBuild/GUI behaviour where relative entries are project-dir-relative.
+        // Also covers the mixed-CWD scenario: when --project=../foo.cppcheck is used,
+        // mPath is "../", so a relative entry like "src/a.cpp" becomes "../src/a.cpp".
+        REDIRECT;
+        constexpr char xml[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                               "<project version=\"1\">\n"
+                               "    <paths>\n"
+                               "        <dir name=\"/abs/file.cpp\"/>\n"
+                               "        <dir name=\"src/rel.cpp\"/>\n"
+                               "    </paths>\n"
+                               "</project>\n";
+        std::istringstream istr(xml);
+        Settings s;
+        Suppressions supprs;
+        TestImporter project;
+        project.setProjectPath("../");
+        ASSERT_EQUALS(true, project.importCppcheckGuiProject(istr, s, supprs));
+        ASSERT_EQUALS(2, project.guiProject.pathNames.size());
+        ASSERT_EQUALS("/abs/file.cpp", project.guiProject.pathNames[0]);
+        ASSERT_EQUALS("../src/rel.cpp", project.guiProject.pathNames[1]);
     }
 
     void ignorePaths() const {
