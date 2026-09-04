@@ -189,7 +189,6 @@ private:
 
     bool importSln(std::istream &istr, const std::string &filename, const std::vector<std::string> &fileFilters);
     bool importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters);
-    bool importDirectorySolutionProps(PropertiesMap &properties);
     bool importVcxproj(const std::string &filename, PropertiesMap &properties, const std::vector<std::string> &fileFilters);
 
     ImportResult importPropsOrTargets(const std::string &file,

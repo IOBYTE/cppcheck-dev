@@ -1793,24 +1793,6 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
     properties["SolutionName"] = fileStem(properties["SolutionFileName"]);
 }
 
-bool ImportProject::importDirectorySolutionProps(PropertiesMap &properties)
-{
-    // Directory.Solution.props lives beside the .sln file, so search from SolutionDir upward.
-    const std::string directorySolutionProps = findFile(properties["SolutionDir"], "Directory.Solution.props");
-    if (!directorySolutionProps.empty()) {
-        MetadataMap data;
-        std::unordered_set<std::string> stack;
-        std::list<ProjectConfiguration> projectConfigurationList;
-        std::list<ItemGroupClCompile> compileList;
-        const ImportResult result = importPropsOrTargets(directorySolutionProps, properties, data, compileList, projectConfigurationList, stack);
-        if (result > ImportResult::NotResolvable) {
-            debugs.emplace_back("Could not fully import \"" + directorySolutionProps + "\" - " + importResultStr(result) + " (continuing)");
-            return false;
-        }
-    }
-    return true;
-}
-
 bool ImportProject::importSln(std::istream &istr, const std::string &filename, const std::vector<std::string> &fileFilters)
 {
     PropertiesMap mVariables;
@@ -1859,10 +1841,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
     const std::string solutionDir = solutionVariables["SolutionDir"];
 
-    // First pass: parse the solution file to collect the header properties and the list of
-    // vcxproj paths.  Directory.Solution.props must be imported after VisualStudioVersion is
-    // known (it appears before all Project(...) lines) but before any vcxproj is processed,
-    // so that its properties are visible to every project.
+    // First pass: parse the solution file to collect the header properties and the list of vcxproj paths.
     std::vector<std::string> vcxprojs;
     while (std::getline(istr,line)) {
         stripCR(line);
@@ -1906,11 +1885,6 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
         return false;
     }
 
-    // Import Directory.Solution.props into solutionVariables before processing any project,
-    // so every importVcxproj call inherits the solution-scope properties.
-    if (!importDirectorySolutionProps(solutionVariables))
-        return false;
-
     for (const std::string &vcxproj : vcxprojs) {
         mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
@@ -1949,11 +1923,6 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
     setSolution(filename, solutionVariables);
 
     solutionVariables["VisualStudioVersion"] = "18.0";
-
-    // Import Directory.Solution.props before processing any project so that its
-    // properties are visible to every importVcxproj call via solutionVariables.
-    if (!importDirectorySolutionProps(solutionVariables))
-        return false;
 
     bool found = false;
 
