@@ -26,6 +26,7 @@
 #include "platform.h"
 #include "utils.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <list>
@@ -97,9 +98,9 @@ public:
 
     /// Controls which element types are processed during a given evaluation pass.
     /// MSBuild evaluates in three ordered phases across the full import graph:
-    ///   Phase 1 (Properties) — all PropertyGroups
-    ///   Phase 2 (ItemDefs)   — all ItemDefinitionGroups
-    ///   Phase 3 (Items)      — all ItemGroups (ClCompile)
+    ///   Phase 1 (Properties) -- all PropertyGroups
+    ///   Phase 2 (ItemDefs)   -- all ItemDefinitionGroups
+    ///   Phase 3 (Items)      -- all ItemGroups (ClCompile)
     /// Separating the phases ensures each phase sees the fully-resolved output
     /// of all preceding phases, matching real MSBuild evaluation semantics.
     enum class EvalPhase : std::uint8_t {
@@ -250,6 +251,17 @@ private:
     bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
+    // Decide whether an <Import> / <ImportGroup> element is taken.
+    // MSBuild resolves the import graph exactly once, while evaluating properties; the
+    // item-definition and item passes then walk that same resolved graph without
+    // re-evaluating Import conditions.  (Otherwise an import guard such as
+    //   <Import Project="x.props" Condition="'$(XImported)' != 'true'"/>
+    // would be taken in the property pass and skipped in every later pass.)
+    // During the Properties phase this evaluates the Condition and records the outcome
+    // in mImportGraph; during the ItemDefs/Items phases it replays the recorded outcome.
+    // When mImportGraph is not active (outside importVcxproj's per-configuration loop)
+    // it simply evaluates the Condition.
+    bool importTaken(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     void checkUnexpandedExpressions(const std::string &text, const char *context);
     bool simplifyPathWithVariables(std::string &s, const PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
@@ -259,9 +271,24 @@ private:
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);
 
+    /// The import graph resolved during the Properties phase of one project
+    /// configuration, replayed during the ItemDefs and Items phases (see importTaken()).
+    struct ImportGraph {
+        /// file key (lower-cased MSBuildThisFileFullPath) -> outcome of each
+        /// <Import>/<ImportGroup> Condition in that file, in document order
+        std::map<std::string, std::vector<bool>> decisions;
+        /// replay position per file key; reset at the start of every phase
+        std::map<std::string, std::size_t> cursor;
+        /// files already imported during the current phase.  MSBuild imports a file at
+        /// most once per evaluation and ignores a repeated <Import> of it (MSB4011).
+        std::unordered_set<std::string> imported;
+        bool active = false;  ///< true only inside importVcxproj's per-configuration loop
+        bool replay = false;  ///< false while recording (Properties), true while replaying
+    };
 
     std::string mPath;
     std::set<std::string> mAllVSConfigs;
+    ImportGraph mImportGraph;
 };
 
 
