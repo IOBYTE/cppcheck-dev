@@ -553,10 +553,8 @@ static bool pathCombineAppend(std::string &result, const std::string &seg,
         } else {
             // MSBuild property eval: reset the path component but preserve the
             // accumulated drive letter so "\foo" on "C:/project/" -> "C:/foo".
-            if (result.size() >= 2 &&
-                std::isalpha(static_cast<unsigned char>(result[0])) &&
-                result[1] == ':')
-                result = result.substr(0, 2) + seg;
+            if (result.size() >= 2 && std::isalpha(static_cast<unsigned char>(result[0])) && result[1] == ':')
+                result.replace(0, 2, seg);
             else
                 result = seg;
         }
@@ -915,7 +913,8 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             }
             std::string result = args[0];
             for (std::size_t i = 1; i < args.size(); ++i) {
-                if (!pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true)) {
+                // cppcheck-suppress useStlAlgorithm
+                if (!pathCombineAppend(result, args[i], true)) {
                     debugs.emplace_back("NormalizePath: could not combine path segments");
                     return "";
                 }
@@ -1055,7 +1054,8 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
             std::string result = args[0];
             for (std::size_t i = 1; i < args.size(); ++i) {
-                if (!pathCombineAppend(result, args[i], /*checkIsAbsolute=*/ true)) {
+                // cppcheck-suppress useStlAlgorithm
+                if (!pathCombineAppend(result, args[i], true)) {
                     debugs.emplace_back("Path.Combine: could not combine path segments");
                     return "";
                 }
@@ -1795,7 +1795,6 @@ void ImportProject::setSolution(const std::string &filename, PropertiesMap &prop
 
 bool ImportProject::importSln(std::istream &istr, const std::string &filename, const std::vector<std::string> &fileFilters)
 {
-    PropertiesMap mVariables;
     std::string line;
 
     debugs.clear();
@@ -1886,7 +1885,7 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
     }
 
     for (const std::string &vcxproj : vcxprojs) {
-        mVariables = solutionVariables;
+        PropertiesMap mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
             errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
             return false;
@@ -1898,7 +1897,6 @@ bool ImportProject::importSln(std::istream &istr, const std::string &filename, c
 
 bool ImportProject::importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters)
 {
-    PropertiesMap mVariables;
     debugs.clear();
 
     tinyxml2::XMLDocument doc;
@@ -1941,7 +1939,7 @@ bool ImportProject::importSlnx(const std::string& filename, const std::vector<st
 
         vcxproj = Path::fromNativeSeparators(std::move(vcxproj));
 
-        mVariables = solutionVariables;
+        PropertiesMap mVariables = solutionVariables;
         if (!importVcxproj(vcxproj, mVariables, fileFilters)) {
             errors.emplace_back("failed to load '" + vcxproj + "' from Visual Studio solution");
             return false;
