@@ -801,20 +801,19 @@ private:
         // Version comparison: more than 4 parts (no truncation)
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.5' > '1.2.3.4.4'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.4' > '1.2.3.4.5'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
-        // == / != is plain case-insensitive string comparison (no version normalization)
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
+        // Version equality normalizes omitted trailing components to zero.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
         // >=, <=, >, < use numeric version comparison; missing trailing components are treated as -1
         // so a shorter version string sorts before a longer one: '17' < '17.0'
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' >= '17.0.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' <= '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' > '17.0.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' < '17.0.0.0'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'16.9' > '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1' < '1.0.0.1'", "", ""));
@@ -969,7 +968,12 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x0F' < '0x10'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' < '0x0F'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'010' > '9'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
+        // Equality comparison: numeric, hexadecimal, Boolean, then string fallback.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' == 'TRUE'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'alpha'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'Beta'", "", ""));
         // Boolean literals and quoted boolean strings are case-insensitive (H-2)
         // Unquoted keywords (matchWord is already case-insensitive)
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("true", "", ""));
@@ -985,6 +989,12 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' And 'True'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'true' And 'false'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'false' Or 'TRUE'", "", ""));
+        // Equality comparison: numeric, hexadecimal, Boolean, then string fallback.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' == 'TRUE'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'alpha'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'Beta'", "", ""));
     }
 
     void testMSBuildStaticFunctions() const {

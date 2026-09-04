@@ -219,6 +219,31 @@ void ImportProject::ignoreOtherConfigs(const std::string &cfg)
     }
 }
 
+// Decode %XX sequences back to their original characters.
+static std::string msbuildUnescape(const std::string &s)
+{
+    std::string result;
+    result.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+            const auto hexVal = [](char c) -> unsigned char {
+                if (c >= '0' && c <= '9')
+                    return static_cast<unsigned char>(c - '0');
+                if (c >= 'a' && c <= 'f')
+                    return static_cast<unsigned char>(c - 'a' + 10);
+                return static_cast<unsigned char>(c - 'A' + 10);
+            };
+            result += static_cast<char>((hexVal(s[i + 1]) << 4) | hexVal(s[i + 2]));
+            i += 2;
+        } else {
+            result += s[i];
+        }
+    }
+    return result;
+}
+
 void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
 {
     // Strip %(metadata) tokens at the start of the string (no preceding semicolon).
@@ -252,6 +277,7 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     }
     if (!eq && !defs.empty())
         defs += "=1";
+    defs = msbuildUnescape(defs);
     fs.defines.swap(defs);
 }
 
@@ -597,31 +623,6 @@ static std::string msbuildEscape(const std::string &s)
             result += hex[c & 0xF];
         } else {
             result += static_cast<char>(c);
-        }
-    }
-    return result;
-}
-
-// Decode %XX sequences back to their original characters.
-static std::string msbuildUnescape(const std::string &s)
-{
-    std::string result;
-    result.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '%' && i + 2 < s.size() &&
-            std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-            std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-            const auto hexVal = [](char c) -> unsigned char {
-                if (c >= '0' && c <= '9')
-                    return static_cast<unsigned char>(c - '0');
-                if (c >= 'a' && c <= 'f')
-                    return static_cast<unsigned char>(c - 'a' + 10);
-                return static_cast<unsigned char>(c - 'A' + 10);
-            };
-            result += static_cast<char>((hexVal(s[i + 1]) << 4) | hexVal(s[i + 2]));
-            i += 2;
-        } else {
-            result += s[i];
         }
     }
     return result;
@@ -2194,16 +2195,35 @@ public:
         return cmp(rhs) >= 0;
     }
 
-    /** Apply an MSBuild relational operator string ("<", ">", "<=", ">="). */
+    // Apply an MSBuild comparison operator string.
     bool compareOp(const std::string &op, const MSBuildVersion &rhs) const {
+        if (op == "==" || op == "!=") {
+            const std::size_t count = std::max(mComponents.size(), rhs.mComponents.size());
+
+            // For equality, MSBuild treats omitted trailing version components
+            // as zero: 1 == 1.0 == 1.0.0.
+            bool equal = true;
+            for (std::size_t i = 0; i < count; ++i) {
+                const int lhsComponent = i < mComponents.size() ? mComponents[i] : 0;
+                const int rhsComponent = i < rhs.mComponents.size() ? rhs.mComponents[i] : 0;
+                if (lhsComponent != rhsComponent) {
+                    equal = false;
+                    break;
+                }
+            }
+
+            return op == "==" ? equal : !equal;
+        }
+
         if (op == "<")
-            return *this <  rhs;
+            return *this < rhs;
         if (op == ">")
-            return *this >  rhs;
+            return *this > rhs;
         if (op == "<=")
             return *this <= rhs;
         if (op == ">=")
             return *this >= rhs;
+
         return false;
     }
 
@@ -2604,7 +2624,7 @@ private:
         std::string path = parseValue();
         expect(")");
 
-        // Apply the same normalization used by toAbsolute() / importPropsOrTargets():
+        // Apply the same normalization used by toAbsolute() / importImport():
         // 1. Normalize native separators so classifyPath() and rfind('/') work.
         path = Path::fromNativeSeparators(std::move(path));
         // 2. If any $(Property) survived expansion (unknown property), we cannot
@@ -2658,27 +2678,30 @@ private:
         return expander.expand();
     }
 
-
-    bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const {
-        if (op == "==" || op == "!=") {
-            // MSBuild == / != is a plain case-insensitive string comparison.
-            const bool strEqual = caseInsensitiveStringCompare(lhs, rhs) == 0;
-            return (op == "==") ? strEqual : !strEqual;
-        }
+    bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const
+    {
+        auto applyComparison = [&op](auto lhsValue, auto rhsValue) {
+            if (op == "==")
+                return lhsValue == rhsValue;
+            if (op == "!=")
+                return lhsValue != rhsValue;
+            if (op == "<")
+                return lhsValue < rhsValue;
+            if (op == ">")
+                return lhsValue > rhsValue;
+            if (op == "<=")
+                return lhsValue <= rhsValue;
+            return lhsValue >= rhsValue; // >=
+        };
 
         // MSBuild keyword "Current" represents the installed toolset version.
-        // Derive from VisualStudioVersion in the properties map (VS version ==
-        // MSBuild version).  Fall back to "18.0" (VS 2026) if absent or unparseable.
-        // Use the full version string so that "Current" >= "18.0" is true when
-        // VisualStudioVersion is "18.0", not false due to a single-component {18}.
         MSBuildVersion currentVersion;
-        {
-            const PropertiesMap::const_iterator it = mVariables.find("VisualStudioVersion");
-            if (it != mVariables.end())
-                currentVersion = MSBuildVersion::parse(it->second);
-        }
+        const auto it = mVariables.find("VisualStudioVersion");
+        if (it != mVariables.end())
+            currentVersion = MSBuildVersion::parse(it->second);
+
         if (currentVersion.empty())
-            currentVersion = MSBuildVersion::parse("18.0"); // fallback: VS 2026
+            currentVersion = MSBuildVersion::parse("18.0"); // VS 2026 fallback
 
         if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
             const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
@@ -2692,24 +2715,41 @@ private:
                 return lhsVersion.compareOp(op, currentVersion);
         }
 
+        // MSBuild tries numeric comparison before other comparison types.
         long lhsInt = 0;
         long rhsInt = 0;
-        if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt)) {
-            if (op == "<")
-                return lhsInt <  rhsInt;
-            if (op == ">")
-                return lhsInt >  rhsInt;
-            if (op == "<=")
-                return lhsInt <= rhsInt;
-            if (op == ">=")
-                return lhsInt >= rhsInt;
-        }
+        if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt))
+            return applyComparison(lhsInt, rhsInt);
 
+        // Then it tries boolean comparison.
+        const auto parseBoolean = [](const std::string &value, bool &result) {
+            if (caseInsensitiveStringCompare(value, "true") == 0) {
+                result = true;
+                return true;
+            }
+            if (caseInsensitiveStringCompare(value, "false") == 0) {
+                result = false;
+                return true;
+            }
+            return false;
+        };
+
+        bool lhsBool = false;
+        bool rhsBool = false;
+        if (parseBoolean(lhs, lhsBool) && parseBoolean(rhs, rhsBool))
+            return applyComparison(lhsBool, rhsBool);
+
+        // Then it tries Version comparison.
         const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
         const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
-
         if (!lhsVersion.empty() && !rhsVersion.empty())
             return lhsVersion.compareOp(op, rhsVersion);
+
+        // Finally, == and != fall back to case-insensitive string comparison.
+        if (op == "==" || op == "!=") {
+            const bool equal = caseInsensitiveStringCompare(lhs, rhs) == 0;
+            return op == "==" ? equal : !equal;
+        }
 
         throw std::runtime_error("Cannot compare '" + lhs + "' and '" + rhs + "'");
     }
@@ -2831,28 +2871,28 @@ namespace {
         s.erase(s.find_last_not_of(" \t\r\n") + 1);
     }
 
-    std::list<std::string> toStringList(const std::string &s)
-    {
+    std::list<std::string> toStringList(const std::string &s) {
         std::list<std::string> ret;
         std::string::size_type pos1 = 0;
         std::string::size_type pos2;
-        while ((pos2 = s.find(';',pos1)) != std::string::npos) {
+
+        while ((pos2 = s.find(';', pos1)) != std::string::npos) {
             if (pos2 > pos1) {
-                std::string piece = s.substr(pos1, pos2-pos1);
+                std::string piece = s.substr(pos1, pos2 - pos1);
                 trimWhitespace(piece);
                 if (!piece.empty())
-                    ret.push_back(std::move(piece));
+                    ret.push_back(msbuildUnescape(piece));
             }
             pos1 = pos2 + 1;
-            if (pos1 >= s.size())
-                break;
         }
+
         if (pos1 < s.size()) {
             std::string piece = s.substr(pos1);
             trimWhitespace(piece);
             if (!piece.empty())
-                ret.push_back(std::move(piece));
+                ret.push_back(msbuildUnescape(piece));
         }
+
         return ret;
     }
 
@@ -3068,7 +3108,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     trimWhitespace(text);
     text = Path::fromNativeSeparators(std::move(text));
     const std::string metaSelfRef = "%(" + std::string(eName) + ")";
-    const std::string propSelfRef  = "$(" + std::string(eName) + ")";
+    const std::string propSelfRef = "$(" + std::string(eName) + ")";
     // Pre-expand the accumulated metadata value before embedding it: resolve %(other)
     // metadata refs and $(prop) refs inside `original` first, then break any tainted
     // self-references, so they don't propagate into the new value and risk step-3 erasure.
@@ -3125,7 +3165,7 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     trimWhitespace(text);
     text = Path::fromNativeSeparators(std::move(text));
     const std::string metaSelfRef = "%(" + std::string(eName) + ")";
-    const std::string propSelfRef  = "$(" + std::string(eName) + ")";
+    const std::string propSelfRef = "$(" + std::string(eName) + ")";
     // Pre-expand `original` (the prior per-item value) before embedding it,
     // matching the same strategy used in addMetadata and addProperty.
     std::string expandedOriginal = original;
@@ -3195,34 +3235,24 @@ void ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
                                         const PropertiesMap &properties,
                                         MetadataMap &metadata)
 {
+    const char *eName = e1->Name();
+    if (!eName || !conditionIsTrue(e1, properties))
+        return;
+
     const char *text = e1->GetText();
-    if (hasName(e1, "ExcludedFromBuild", properties)) {
+    if (std::strcmp(eName, "ExcludedFromBuild") == 0) {
         std::string val(text ? text : "");
         trimWhitespace(val);
         expandMSBuildVariables(val, properties);
         metadata["ExcludedFromBuild"] = std::move(val);
         return;
     }
-    if (!text)
-        return;
-    static const char *const METADATA_KEYS[] = {
-        "AdditionalIncludeDirectories",
-        "ForcedIncludeFiles",
-        "PreprocessorDefinitions",
-        "UndefinePreprocessorDefinitions",
-        "LanguageStandard",
-        "LanguageStandard_C",
-        "AdditionalOptions",
-        "AdditionalUsingDirectories",
-    };
-    for (const char *key : METADATA_KEYS) {
-        // cppcheck-suppress useStlAlgorithm
-        if (hasName(e1, key, properties)) {
-            auto &v = metadata[key];
-            v = getMetadata(e1, properties, metadata, v);
-            return;
-        }
-    }
+
+    // Visual Studio permits any item metadata to be overridden at item level.
+    // Keep the same metadata expansion and inheritance behavior used by
+    // ItemDefinitionGroup processing.
+    auto &value = metadata[eName];
+    value = getMetadata(e1, properties, metadata, value);
 }
 
 static void applyAdditionalOptions(MetadataMap &metadata)
@@ -3335,12 +3365,12 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
             while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1]))) --hi;
             if (lo < hi) {
                 const std::string trimmed = seg.substr(lo, hi - lo);
-                if (trimmed.find('*') != std::string::npos ||
-                    trimmed.find('?') != std::string::npos) {
-                    debugs.emplace_back("ClCompile item glob not supported, skipped: '" + trimmed + "'");
-                } else {
-                    result.emplace_back(trimmed, toAbsolute(trimmed, projectDir, properties));
-                }
+                const std::string decoded = msbuildUnescape(trimmed);
+                if (decoded.find('*') != std::string::npos ||
+                    decoded.find('?') != std::string::npos) {
+                    debugs.emplace_back("ClCompile item glob not supported, skipped: '" + decoded + "'");
+                } else
+                    result.emplace_back(decoded, toAbsolute(decoded, projectDir, properties));
             }
             seg.clear();
         } else {
@@ -3348,6 +3378,65 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
         }
     }
     return result;
+}
+
+void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
+                                         const std::string &baseDir,
+                                         const PropertiesMap &properties,
+                                         std::list<ItemGroupClCompile> &compileList)
+{
+    const char *update = node->Attribute("Update");
+    if (!update)
+        return;
+
+    const std::vector<std::pair<std::string, std::string>> updateItems =
+        expandItemSpec(update, baseDir, properties);
+
+    for (ItemGroupClCompile &compile : compileList) {
+        const bool matches = std::any_of(
+            updateItems.cbegin(),
+            updateItems.cend(),
+            [&compile](const std::pair<std::string, std::string> &item) {
+                return Path::sameFileName(item.second, compile.filename);
+        });
+
+        if (!matches)
+            continue;
+
+        for (const tinyxml2::XMLElement *child = node->FirstChildElement();
+            child;
+            child = child->NextSiblingElement()) {
+            applyClCompileChild(child, properties, compile.metadata);
+        }
+
+        applyAdditionalOptions(compile.metadata);
+    }
+}
+
+void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
+                                         const std::string &baseDir,
+                                         const PropertiesMap &properties,
+                                         std::list<ItemGroupClCompile> &compileList) {
+    const char *remove = node->Attribute("Remove");
+    if (!remove)
+        return;
+
+    const std::vector<std::pair<std::string, std::string>> removeItems =
+        expandItemSpec(remove, baseDir, properties);
+
+    for (auto it = compileList.begin(); it != compileList.end();) {
+        const bool matches = std::any_of(
+            removeItems.cbegin(),
+            removeItems.cend(),
+            [&it](const std::pair<std::string, std::string> &item) {
+                return Path::sameFileName(item.second, it->filename);
+        });
+
+        if (matches)
+            it = compileList.erase(it);
+        else
+            ++it;
+    }
 }
 
 ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElement *node,
@@ -3379,8 +3468,9 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
         // include paths, and PreprocessorDefinitions so they must be present for
         // expandMSBuildVariables() to resolve %(Key) references correctly.
         {
-            const std::string ext = Path::getFilenameExtensionInLowerCase(toInclude);
             const std::string base = stripDirectoryPart(toInclude);
+            const std::string::size_type dot = base.rfind('.');
+            const std::string ext = dot != std::string::npos ? base.substr(dot) : std::string();
             const std::string stem = fileStem(base);
 
             // Decompose the absolute path into a root prefix and a directory suffix.
@@ -3490,11 +3580,6 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
         // Identify well-known system files by their logical filename rather than a
         // substring search on the full path.  This avoids false positives when a
         // user file's path happens to contain "Microsoft.Cpp.props" etc.
-        //
-        // Works for both fully-resolved paths ("C:/.../Microsoft.Cpp.targets") and
-        // paths that still carry an unresolved property reference
-        // ("$(VCTargetsPath)Microsoft.Cpp.targets"): after the last '/' we strip the
-        // trailing ')' of any property reference to reach the bare filename.
         const auto filenameIs = [&file](const char *name) {
             const std::string::size_type slash = file.rfind('/');
             const std::string part = (slash != std::string::npos) ? file.substr(slash + 1) : file;
@@ -3507,7 +3592,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppTargets");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3522,28 +3607,18 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                     properties["OutputPath"] = outDirIt->second;
             }
 
-            if (file.find("$(") == std::string::npos) {
-                // Path is fully resolved -- import the actual file.  The real import chain
-                // (Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets)
-                // will handle Directory.Build.targets, so do NOT import it synthetically here.
-                ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            // Emulate key side-effect: Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets.
+            std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
+            if (!directoryBuildTargets.empty()) {
+                ImportResult result = importImport(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-            } else {
-                // VCTargetsPath unresolved -- the real import chain cannot run, so emulate its
-                // key side-effect: Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets.
-                std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
-                if (!directoryBuildTargets.empty()) {
-                    ImportResult result = importPropsOrTargets(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                    if (result > ImportResult::NotResolvable)
-                        debugs.emplace_back("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
-                }
+                    debugs.emplace_back("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             it = properties.find("ForceImportAfterCppTargets");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3555,72 +3630,60 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppDefaultProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
-            if (file.find("$(") == std::string::npos) {
-                // Path is fully resolved -- import the actual file.  The real import chain
-                // (Microsoft.Cpp.Default.props -> Microsoft.Common.props -> Directory.Build.props)
-                // will handle Directory.Build.props, so do NOT import it synthetically here.
-                ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            // Emulate key side-effects here, including the Directory.Build.props import that
+            // Microsoft.Common.props would normally perform.
+            // Microsoft.Cpp.Default.props -> Microsoft.Common.props -> Directory.Build.props.
+            // Directory.Build.props is an ordinary import: it is walked in every phase so
+            // that its ItemDefinitionGroups and ItemGroups are collected as well, exactly
+            // like Directory.Build.targets in the Microsoft.Cpp.targets emulation above.
+            std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
+            if (!directoryBuildProps.empty()) {
+                ImportResult result = importImport(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
-            } else {
-                // VCTargetsPath unresolved -- the real import chain cannot run, so emulate its
-                // key side-effects here, including the Directory.Build.props import that
-                // Microsoft.Common.props would normally perform.
-                // Microsoft.Cpp.Default.props -> Microsoft.Common.props -> Directory.Build.props.
-                // Directory.Build.props is an ordinary import: it is walked in every phase so
-                // that its ItemDefinitionGroups and ItemGroups are collected as well, exactly
-                // like Directory.Build.targets in the Microsoft.Cpp.targets emulation above.
-                {
-                    std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
-                    if (!directoryBuildProps.empty()) {
-                        ImportResult result = importPropsOrTargets(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                        if (result > ImportResult::NotResolvable)
-                            debugs.emplace_back("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
-                    }
-                }
+                    debugs.emplace_back("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
+            }
 
-                // Emulate key defaults set by Microsoft.Cpp.Default.props (properties only).
-                // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
-                // the .sln header or the importVcxproj default).  The mapping is:
-                //   VS 10 -> v100, VS 11 -> v110, VS 12 -> v120,
-                //   VS 14 -> v140, VS 15 -> v141, VS 16 -> v142, VS 17 -> v143, VS 18 -> v145
-                if ((phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) && properties.find("DefaultPlatformToolset") == properties.end()) {
-                    auto vsIt = properties.find("VisualStudioVersion");
-                    if (vsIt != properties.end()) {
-                        int major = 0;
-                        try { major = std::stoi(vsIt->second); } catch (...) {}
-                        std::string toolset;
-                        if (major == 18)
-                            toolset = "v145";
-                        else if (major == 17)
-                            toolset = "v143";
-                        else if (major == 16)
-                            toolset = "v142";
-                        else if (major == 15)
-                            toolset = "v141";
-                        else if (major == 14)
-                            toolset = "v140";
-                        else if (major == 12)
-                            toolset = "v120";
-                        else if (major == 11)
-                            toolset = "v110";
-                        else if (major == 10)
-                            toolset = "v100";
-                        if (!toolset.empty())
-                            properties["DefaultPlatformToolset"] = toolset;
-                    }
+            // Emulate key defaults set by Microsoft.Cpp.Default.props (properties only).
+            // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
+            // the .sln header or the importVcxproj default).  The mapping is:
+            //   VS 10 -> v100, VS 11 -> v110, VS 12 -> v120,
+            //   VS 14 -> v140, VS 15 -> v141, VS 16 -> v142, VS 17 -> v143, VS 18 -> v145
+            if ((phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) && properties.find("DefaultPlatformToolset") == properties.end()) {
+                auto vsIt = properties.find("VisualStudioVersion");
+                if (vsIt != properties.end()) {
+                    int major = 0;
+                    try { major = std::stoi(vsIt->second); } catch (...) {}
+                    std::string toolset;
+                    if (major == 18)
+                        toolset = "v145";
+                    else if (major == 17)
+                        toolset = "v143";
+                    else if (major == 16)
+                        toolset = "v142";
+                    else if (major == 15)
+                        toolset = "v141";
+                    else if (major == 14)
+                        toolset = "v140";
+                    else if (major == 12)
+                        toolset = "v120";
+                    else if (major == 11)
+                        toolset = "v110";
+                    else if (major == 10)
+                        toolset = "v100";
+                    if (!toolset.empty())
+                        properties["DefaultPlatformToolset"] = toolset;
                 }
             }
 
             it = properties.find("ForceImportAfterCppDefaultProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3635,42 +3698,36 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
-            if (file.find("$(") != std::string::npos) {
-                if (phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) {
-                    // VCTargetsPath unresolved -- provide output-dir defaults that Cpp.props defines,
-                    // but only when the vcxproj has not already set them in an earlier PropertyGroup.
-                    const auto platformIt = properties.find("Platform");
-                    const bool isWin32 = platformIt != properties.end() &&
-                                         caseInsensitiveStringCompare(platformIt->second, "Win32") == 0;
-                    std::string intDir = isWin32 ? "$(Configuration)/" : "$(Platform)/$(Configuration)/";
-                    std::string outDir = isWin32 ? "$(SolutionDir)$(Configuration)/" : "$(SolutionDir)$(Platform)/$(Configuration)/";
-                    expandMSBuildVariables(intDir, properties);
-                    expandMSBuildVariables(outDir, properties);
-                    properties.emplace("IntDir", intDir);
-                    properties.emplace("OutDir", outDir);
-                    // GeneratedFilesDir defaults to "Generated Files\" (relative to the project
-                    // directory) -- that is what Microsoft.Cpp.Default.props provides, and it is
-                    // the path CppWinRT projects use by convention (e.g. module.g.cpp).
-                    // Do NOT prefix with IntDir here: IntDir is an absolute intermediate path
-                    // specific to the build configuration, whereas GeneratedFilesDir is a
-                    // project-relative folder that is often committed to source control.
-                    properties.emplace("GeneratedFilesDir", "Generated Files/");
-                }
-            } else {
-                ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
+            if (phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) {
+                // Provide the output-directory defaults normally supplied by Cpp.props.
+                // Use emplace so values already assigned earlier in the project are preserved.
+                const auto platformIt = properties.find("Platform");
+                const bool isWin32 = platformIt != properties.end() &&
+                                     caseInsensitiveStringCompare(platformIt->second, "Win32") == 0;
+                std::string intDir = isWin32 ? "$(Configuration)/" : "$(Platform)/$(Configuration)/";
+                std::string outDir = isWin32 ? "$(SolutionDir)$(Configuration)/" : "$(SolutionDir)$(Platform)/$(Configuration)/";
+                expandMSBuildVariables(intDir, properties);
+                expandMSBuildVariables(outDir, properties);
+                properties.emplace("IntDir", intDir);
+                properties.emplace("OutDir", outDir);
+                // GeneratedFilesDir defaults to "Generated Files\" (relative to the project
+                // directory) -- that is what Microsoft.Cpp.Default.props provides, and it is
+                // the path CppWinRT projects use by convention (e.g. module.g.cpp).
+                // Do NOT prefix with IntDir here: IntDir is an absolute intermediate path
+                // specific to the build configuration, whereas GeneratedFilesDir is a
+                // project-relative folder that is often committed to source control.
+                properties.emplace("GeneratedFilesDir", "Generated Files/");
             }
 
             it = properties.find("ForceImportAfterCppProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importPropsOrTargets(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3678,7 +3735,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             return ImportResult::Ok;
         }
 
-        ImportResult result = importPropsOrTargets(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+        ImportResult result = importImport(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
         if (result > ImportResult::NotResolvable)
             debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
         if (result == ImportResult::NotResolvable) {
@@ -3690,16 +3747,14 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     return ImportResult::Ok;
 }
 
-ImportProject::ImportResult ImportProject::importImportGroup(
-    const tinyxml2::XMLElement *node,
-    const std::string &baseDir,
-    PropertiesMap &properties,
-    MetadataMap &metadata,
-    std::list<ItemGroupClCompile> &compileList,
-    std::list<ProjectConfiguration> &projectConfigurationList,
-    std::unordered_set<std::string> &importStack,
-    EvalPhase phase)
-{
+ImportProject::ImportResult ImportProject::importImportGroup(const tinyxml2::XMLElement *node,
+                                                             const std::string &baseDir,
+                                                             PropertiesMap &properties,
+                                                             MetadataMap &metadata,
+                                                             std::list<ItemGroupClCompile> &compileList,
+                                                             std::list<ProjectConfiguration> &projectConfigurationList,
+                                                             std::unordered_set<std::string> &importStack,
+                                                             EvalPhase phase) {
     ImportResult ret = ImportResult::Ok;
     for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
         if (importTaken(e, "Import", "Project", properties)) {
@@ -3716,27 +3771,128 @@ ImportProject::ImportResult ImportProject::importImportGroup(
     return ret;
 }
 
-ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::string &file,
-                                                                PropertiesMap &properties,
-                                                                MetadataMap &metadata,
-                                                                std::list<ItemGroupClCompile> &compileList,
-                                                                std::list<ProjectConfiguration> &projectConfigurationList,
-                                                                std::unordered_set<std::string> &importStack,
-                                                                EvalPhase phase)
-{
+ImportProject::ImportResult ImportProject::importChoose(const tinyxml2::XMLElement *node,
+                                                        const std::string &baseDir,
+                                                        PropertiesMap &properties,
+                                                        MetadataMap &metadata,
+                                                        std::list<ItemGroupClCompile> &compileList,
+                                                        std::list<ProjectConfiguration> &projectConfigurationList,
+                                                        std::unordered_set<std::string> &importStack,
+                                                        EvalPhase phase) {
+    const tinyxml2::XMLElement *selected = nullptr;
+    const tinyxml2::XMLElement *otherwise = nullptr;
+
+    for (const tinyxml2::XMLElement *branch = node->FirstChildElement(); branch; branch = branch->NextSiblingElement()) {
+        const char *name = branch->Name();
+
+        if (std::strcmp(name, "When") == 0) {
+            if (!selected && conditionIsTrue(branch, properties))
+                selected = branch;
+        } else if (std::strcmp(name, "Otherwise") == 0)
+            otherwise = branch;
+    }
+
+    if (!selected)
+        selected = otherwise;
+
+    if (!selected)
+        return ImportResult::Ok;
+
+    return importElementChildren(selected, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+}
+
+ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2::XMLElement *parent,
+                                                                 const std::string &baseDir,
+                                                                 PropertiesMap &properties,
+                                                                 MetadataMap &metadata,
+                                                                 std::list<ItemGroupClCompile> &compileList,
+                                                                 std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                 std::unordered_set<std::string> &importStack,
+                                                                 EvalPhase phase) {
+    ImportResult result = ImportResult::Ok;
+
+    for (const tinyxml2::XMLElement *node = parent->FirstChildElement(); node; node = node->NextSiblingElement()) {
+        if (hasName(node, "PropertyGroup", properties)) {
+            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
+                for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
+                    addProperty(child, properties);
+            }
+        } else if (hasName(node, "ItemDefinitionGroup", properties)) {
+            if (phase == EvalPhase::ItemDefs || phase == EvalPhase::Evaluate) {
+                for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
+                    if (!hasName(item, "ClCompile", properties))
+                        continue;
+
+                    for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
+                        addMetadata(child, properties, metadata);
+                }
+            }
+        } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
+            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
+                for (const tinyxml2::XMLElement *configuration = node->FirstChildElement("ProjectConfiguration"); configuration; configuration = configuration->NextSiblingElement("ProjectConfiguration")) {
+                    const ProjectConfiguration pc(configuration);
+                    if (pc.configuration.empty())
+                        continue;
+
+                    const bool alreadyPresent = std::any_of(projectConfigurationList.cbegin(),
+                                                            projectConfigurationList.cend(),
+                                                            [&pc](const ProjectConfiguration &existing) {
+                        return existing.name == pc.name;
+                    });
+
+                    if (!alreadyPresent) {
+                        projectConfigurationList.emplace_back(pc);
+                        mAllVSConfigs.insert(pc.configuration);
+                    }
+                }
+            }
+        } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
+            if (phase == EvalPhase::Items || phase == EvalPhase::Evaluate) {
+                for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
+                    if (!hasName(item, "ClCompile", properties))
+                        continue;
+
+                    if (item->Attribute("Include"))
+                        importCompile(item, baseDir, properties, metadata, compileList);
+                    else if (item->Attribute("Update"))
+                        applyClCompileUpdate(item, baseDir, properties, compileList);
+                    else if (item->Attribute("Remove"))
+                        applyClCompileRemove(item, baseDir, properties, compileList);
+                }
+            }
+        } else if (importTaken(node, "ImportGroup", nullptr, properties)) {
+            const ImportResult importResult = importImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            result = std::max(result, importResult);
+        } else if (importTaken(node, "Import", "Project", properties)) {
+            const ImportResult importResult = importProject(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            result = std::max(result, importResult);
+        } else if (hasName(node, "Choose", properties)) {
+            const ImportResult chooseResult = importChoose(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            result = std::max(result, chooseResult);
+        }
+    }
+
+    return result;
+}
+
+ImportProject::ImportResult ImportProject::importImport(const std::string &file,
+                                                        PropertiesMap &properties,
+                                                        MetadataMap &metadata,
+                                                        std::list<ItemGroupClCompile> &compileList,
+                                                        std::list<ProjectConfiguration> &projectConfigurationList,
+                                                        std::unordered_set<std::string> &importStack,
+                                                        EvalPhase phase) {
     std::string filename(file);
-    // properties can't be resolved
+    // file can't be resolved
     if (!simplifyPathWithVariables(filename, properties))
         return ImportResult::NotResolvable;
 
     // prepend project dir (if it exists) to transform relative paths into absolute ones
     // Use classifyPath so that root-relative paths (\foo -> C:\foo) are resolved
     // against the base drive, not treated as absolute on Linux.
-    {
-        const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
-        if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
-            filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
-    }
+    const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
+    if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
+        filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
 
     // detect circular property sheet imports (A imports B, B imports A, a file importing
     // itself, ...) instead of recursing until the stack overflows - mirrors MSBuild's own
@@ -3780,74 +3936,8 @@ ImportProject::ImportResult ImportProject::importPropsOrTargets(const std::strin
     MSBuildThis msBuildThis(filename, properties);
     std::string propsDir = Path::getPathFromFilename(filename);
 
-    ImportResult ret = ImportResult::Ok;
-    for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
-        if (importTaken(node, "ImportGroup", nullptr, properties)) {
-            // MSBuild's Label attribute on <ImportGroup> is purely informational metadata
-            // for the IDE and toolchain; MSBuild itself processes every <ImportGroup>
-            // unconditionally.  importProject() dispatches by file extension, so no
-            // per-label branching is needed.
-            ret = std::max(ret, importImportGroup(node, propsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase));
-        } else if (hasName(node, "PropertyGroup", properties)) {
-            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
-                    addProperty(e, properties);
-            }
-        } else if (hasName(node, "ItemDefinitionGroup", properties)) {
-            if (phase == EvalPhase::ItemDefs || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-                    if (hasName(e1, "ClCompile", properties)) {
-                        for (const tinyxml2::XMLElement *e2 = e1->FirstChildElement(); e2; e2 = e2->NextSiblingElement()) {
-                            addMetadata(e2, properties, metadata);
-                        }
-                    }
-                }
-            }
-        } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *pcNode = node->FirstChildElement("ProjectConfiguration"); pcNode; pcNode = pcNode->NextSiblingElement("ProjectConfiguration")) {
-                    const ProjectConfiguration pc(pcNode);
-                    if (!pc.configuration.empty()) {
-                        // Deduplicate: the same config can arrive again when Directory.Build.props /
-                        // Cpp.Build.props is re-imported inside the per-config loop.
-                        const bool already = std::any_of(projectConfigurationList.cbegin(),
-                                                         projectConfigurationList.cend(),
-                                                         [&pc](const ProjectConfiguration &existing) {
-                            return existing.name == pc.name;
-                        });
-                        if (!already) {
-                            projectConfigurationList.emplace_back(pc);
-                            mAllVSConfigs.insert(pc.configuration);
-                        }
-                    }
-                }
-            }
-        } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-            // Handle plain (unlabeled) or otherwise-labeled ItemGroups that contain
-            // ClCompile elements; .targets
-            // files from SDK-style toolchains (WinUI, CppWinRT, vcpkg, unity builds)
-            // frequently contribute source files this way.
-            if (phase == EvalPhase::Items || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                    if (hasName(e, "ClCompile", properties)) {
-                        if (e->Attribute("Include"))
-                            importCompile(e, propsDir, properties, metadata, compileList);
-                    }
-                }
-            }
-        } else if (importTaken(node, "Import", "Project", properties)) {
-            ImportResult result = importProject(node, propsDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-            // Non-fatal: log and continue so later elements (including
-            // <ItemGroup Label="ProjectConfigurations">) are still processed.
-            if (result > ImportResult::NotResolvable && phase != EvalPhase::Discover) {
-                const char *proj = node->Attribute("Project");
-                debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
-                ret = std::max(result, ret);
-            }
-        }
-    }
-
-    return ret;
+    return importElementChildren(rootnode, propsDir, properties, metadata, compileList,
+                                 projectConfigurationList, importStack, phase);
 }
 
 bool ImportProject::importVcxproj(const std::string &filename,
@@ -4024,60 +4114,11 @@ bool ImportProject::importVcxproj(const std::string &filename,
         mImportGraph.replay = false;
         mImportGraph.imported.insert(importFileKey(nfilename));
 
-        for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement(); node; node = node->NextSiblingElement()) {
-            if (hasName(node, "PropertyGroup", properties)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
-                    addProperty(e, properties);
-            } else if (hasName(node, "ItemDefinitionGroup", properties)) {
-                for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement()) {
-                    if (hasName(e1, "ClCompile", properties)) {
-                        for (const tinyxml2::XMLElement *e2 = e1->FirstChildElement(); e2; e2 = e2->NextSiblingElement())
-                            addMetadata(e2, properties, metadata);
-                    }
-                }
-            } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-                for (const tinyxml2::XMLElement *pcNode = node->FirstChildElement("ProjectConfiguration");
-                     pcNode; pcNode = pcNode->NextSiblingElement("ProjectConfiguration")) {
-                    const ProjectConfiguration pc1(pcNode);
-                    if (!pc1.configuration.empty()) {
-                        const bool already = std::any_of(projectConfigurationList.cbegin(),
-                                                         projectConfigurationList.cend(),
-                                                         [&pc1](const ProjectConfiguration &existing) {
-                            return existing.name == pc1.name;
-                        });
-                        if (!already) {
-                            projectConfigurationList.emplace_back(pc1);
-                            mAllVSConfigs.insert(pc1.configuration);
-                        }
-                    }
-                }
-            } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                    if (hasName(e, "ClCompile", properties)) {
-                        if (e->Attribute("Include"))
-                            importCompile(e, projectDir, properties, metadata, compileList);
-                    }
-                }
-            } else if (importTaken(node, "ImportGroup", nullptr, properties)) {
-                const ImportResult result = importImportGroup(node, projectDir, properties, metadata,
-                                                              compileList, projectConfigurationList,
-                                                              importStack, EvalPhase::Evaluate);
-                if (result > ImportResult::NotResolvable) {
-                    const char *proj = node->Attribute("Project");
-                    debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") +
-                                        "\" - " + importResultStr(result) + " (continuing)");
-                }
-            } else if (importTaken(node, "Import", "Project", properties)) {
-                const ImportResult result = importProject(node, projectDir, properties, metadata,
-                                                          compileList, projectConfigurationList,
-                                                          importStack, EvalPhase::Evaluate);
-                if (result > ImportResult::NotResolvable) {
-                    const char *proj = node->Attribute("Project");
-                    debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") +
-                                        "\" - " + importResultStr(result) + " (continuing)");
-                }
-            }
-        }
+        const ImportResult evaluationResult = importElementChildren(rootnode, projectDir, properties, metadata,
+                                                                    compileList, projectConfigurationList, importStack,
+                                                                    EvalPhase::Evaluate);
+        if (evaluationResult > ImportResult::NotResolvable)
+            debugs.emplace_back("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(evaluationResult));
 
         // # TODO: support signedness of char via /J (and potential XML option for it)?
         // we can only set it globally but in this context it needs to be treated per file
@@ -4131,9 +4172,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
 
             // Currently selects C or C++ from the file extension.
-            const bool isCFile = Path::getFilenameExtensionInLowerCase(compile.filename) == ".c";
+            bool isCFile = Path::getFilenameExtensionInLowerCase(compile.filename) == ".c";
+            const std::string &compileAs = compile.get("CompileAs");
+            if (compileAs == "CompileAsC")
+                isCFile = true;
+            else if (compileAs == "CompileAsCpp")
+                isCFile = false;
             if (isCFile) {
-                // C file: use LanguageStandard_C; MSVC defaults to C17 for /TC files.
                 Standards::cstd_t cstd = Standards::C17;
                 const std::string &languageStandardC = compile.get("LanguageStandard_C");
                 if (languageStandardC == "stdc11")
@@ -4167,7 +4212,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
             // <crtdefs.h>) use generic fallbacks, fail to compile, or misidentify
             // the supported language standard.
             {
-                std::string mscVer    = "1950";      // VS 2026 fallback
+                std::string mscVer = "1950";      // VS 2026 fallback
                 std::string mscFullVer = "195000000";
 
                 // Prefer item-level override, then project property, then DefaultPlatformToolset.
@@ -4196,11 +4241,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 } else if (toolset == "v140") { // VS 2015
                     mscVer = "1900"; mscFullVer = "190000000";
                 } else if (startsWith(toolset, "v14")) {
-                    // v146+ (future): last digit of toolset suffix * 10.
-                    // e.g. "v146" -> substr(3)="6" -> 1900+60=1960.
                     try {
                         const int sub = std::stoi(toolset.substr(3));
-                        mscVer    = std::to_string(1900 + (sub * 10));
+                        mscVer = std::to_string(1900 + (sub * 10));
                         mscFullVer = mscVer + "00000";
                     } catch (...) {}
                 } else {
@@ -4252,12 +4295,16 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 fs.defines += ";_MSVC_LANG=" + msvcLang;
             }
 
-            std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
-            if (enableEnhancedInstructionSet == "StreamingSIMDExtensions")
-                fs.defines += ";__SSE__";
-            else if (enableEnhancedInstructionSet == "StreamingSIMDExtensions2")
-                fs.defines += ";__SSE2__";
-            else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions")
+            const std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
+            if (enableEnhancedInstructionSet == "StreamingSIMDExtensions") {
+                // MSVC defines _M_IX86_FP only for x86 targets.
+                if (pc.platform == ProjectConfiguration::Win32)
+                    fs.defines += ";_M_IX86_FP=1";
+            } else if (enableEnhancedInstructionSet == "StreamingSIMDExtensions2") {
+                // MSVC defines _M_IX86_FP only for x86 targets.
+                if (pc.platform == ProjectConfiguration::Win32)
+                    fs.defines += ";_M_IX86_FP=2";
+            } else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions")
                 fs.defines += ";__AVX__";
             else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions2")
                 fs.defines += ";__AVX2__";
@@ -4364,9 +4411,39 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
             fs.systemIncludePaths = std::move(fs.includePaths);
             fsSetIncludePaths(fs, projectDir, toStringList(compile.get("AdditionalIncludeDirectories")), properties);
-            fs.forcedIncludes = toStringList(compile.get("ForcedIncludeFiles"));
-            for (auto &forcedInclude : fs.forcedIncludes)
-                forcedInclude = toAbsolute(forcedInclude, projectDir, properties);
+            fs.forcedIncludes.clear();
+
+            for (const std::string &forcedInclude : toStringList(compile.get("ForcedIncludeFiles"))) {
+                const std::string normalized = Path::fromNativeSeparators(forcedInclude);
+
+                // Absolute and root-relative paths do not use the include search path.
+                const bool isRelative =
+                    !normalized.empty() &&
+                    normalized[0] != '/' &&
+                    !(normalized.size() > 1 && normalized[1] == ':');
+
+                std::string resolved = toAbsolute(forcedInclude, projectDir, properties);
+
+                if (isRelative) {
+                    // Visual Studio searches relative forced includes from the project
+                    // directory before AdditionalIncludeDirectories.
+                    if (!std::ifstream(resolved).good()) {
+                        for (const std::string &includePath : fs.includePaths) {
+                            const std::string candidate =
+                                toAbsolute(forcedInclude, includePath, properties);
+
+                            if (std::ifstream(candidate).good()) {
+                                resolved = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Preserve the project-relative absolute path if no candidate exists so
+                // the existing missing-file diagnostics remain possible.
+                fs.forcedIncludes.push_back(std::move(resolved));
+            }
 
             fileSettings.push_back(std::move(fs));
         }
@@ -4621,7 +4698,7 @@ bool ImportProject::importBcb6Prj(const std::string &projectFilename)
     // for the BCB6 project loading.
     PropertiesMap properties;
     const std::string defines = predefines + ";" + sysdefines + ";" + userdefines;
-    const std::string cppDefines  = cppPredefines + ";" + defines;
+    const std::string cppDefines = cppPredefines + ";" + defines;
     const bool forceCppMode = (cflags.find("-P") != cflags.end());
 
     for (const std::string &c : compileList) {
