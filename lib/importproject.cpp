@@ -3588,15 +3588,23 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
                 // the .sln header or the importVcxproj default).  The mapping is:
                 //   VS 10 -> v100, VS 11 -> v110, VS 12 -> v120,
-                //   VS 14 -> v140, VS 15 -> v141, VS 16 -> v142, VS 17 -> v143, VS 18 -> v144, ...
+                //   VS 14 -> v140, VS 15 -> v141, VS 16 -> v142, VS 17 -> v143, VS 18 -> v145
                 if ((phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) && properties.find("DefaultPlatformToolset") == properties.end()) {
                     auto vsIt = properties.find("VisualStudioVersion");
                     if (vsIt != properties.end()) {
                         int major = 0;
                         try { major = std::stoi(vsIt->second); } catch (...) {}
                         std::string toolset;
-                        if (major >= 14)
-                            toolset = "v14" + std::to_string(major - 14);
+                        if (major == 18)
+                            toolset = "v145";
+                        else if (major == 17)
+                            toolset = "v143";
+                        else if (major == 16)
+                            toolset = "v142";
+                        else if (major == 15)
+                            toolset = "v141";
+                        else if (major == 14)
+                            toolset = "v140";
                         else if (major == 12)
                             toolset = "v120";
                         else if (major == 11)
@@ -3636,8 +3644,11 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 if (phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) {
                     // VCTargetsPath unresolved -- provide output-dir defaults that Cpp.props defines,
                     // but only when the vcxproj has not already set them in an earlier PropertyGroup.
-                    std::string intDir = "$(Platform)/$(Configuration)/";
-                    std::string outDir = "$(SolutionDir)$(Platform)/$(Configuration)/";
+                    const auto platformIt = properties.find("Platform");
+                    const bool isWin32 = platformIt != properties.end() &&
+                                         caseInsensitiveStringCompare(platformIt->second, "Win32") == 0;
+                    std::string intDir = isWin32 ? "$(Configuration)/" : "$(Platform)/$(Configuration)/";
+                    std::string outDir = isWin32 ? "$(SolutionDir)$(Configuration)/" : "$(SolutionDir)$(Platform)/$(Configuration)/";
                     expandMSBuildVariables(intDir, properties);
                     expandMSBuildVariables(outDir, properties);
                     properties.emplace("IntDir", intDir);
@@ -3854,7 +3865,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // but normalize here as a safety net so all subsequent rfind('/') are correct.
     const std::string nfilename = Path::simplifyPath(Path::fromNativeSeparators(filename));
 
-    properties.emplace("VisualStudioVersion", "17.0");
+    // A solution import may already provide VisualStudioVersion.
+    // Direct .vcxproj imports have no solution header, so use the current
+    // supported Visual Studio version as the fallback.
+    properties.emplace("VisualStudioVersion", "18.0");
 
     // User-extensible MSVC properties that legitimately default to "" when not
     // set by the project.  In real MSBuild every undefined property expands to
@@ -4033,7 +4047,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                         });
                         if (!already) {
                             projectConfigurationList.emplace_back(pc1);
-                            mAllVSConfigs.insert(pc.configuration);
+                            mAllVSConfigs.insert(pc1.configuration);
                         }
                     }
                 }
@@ -4116,6 +4130,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 fs.defines += ";_M_ARM=7";
             }
 
+            // Currently selects C or C++ from the file extension.
             const bool isCFile = Path::getFilenameExtensionInLowerCase(compile.filename) == ".c";
             if (isCFile) {
                 // C file: use LanguageStandard_C; MSVC defaults to C17 for /TC files.
@@ -4129,7 +4144,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     cstd = Standards::CLatest;
                 fs.standard = Standards::getC(cstd);
             } else {
-                // MSVC defaults to C++14 when no /std: flag is set (v140 through v143).
+                // MSVC defaults to C++14 when no /std: flag is set.
                 Standards::cppstd_t cppstd = Standards::CPP14;
                 const std::string &languageStandard = compile.get("LanguageStandard");
                 if (languageStandard == "stdcpp11")
@@ -4152,8 +4167,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
             // <crtdefs.h>) use generic fallbacks, fail to compile, or misidentify
             // the supported language standard.
             {
-                std::string mscVer    = "1940";      // VS 2025/2026 fallback
-                std::string mscFullVer = "194000000";
+                std::string mscVer    = "1950";      // VS 2026 fallback
+                std::string mscFullVer = "195000000";
 
                 // Prefer item-level override, then project property, then DefaultPlatformToolset.
                 std::string toolset = compile.get("PlatformToolset");
@@ -4264,6 +4279,44 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 if (fs.platformType == Platform::Type::Win32W)
                     fs.platformType = Platform::Type::Win32A;
             }
+
+            const auto configurationTypeIt = properties.find("ConfigurationType");
+            if (configurationTypeIt != properties.end() &&
+                caseInsensitiveStringCompare(configurationTypeIt->second, "DynamicLibrary") == 0) {
+                fs.defines += ";_WINDLL";
+            }
+
+            if (useOfMfcIt != properties.end() &&
+                caseInsensitiveStringCompare(useOfMfcIt->second, "Dynamic") == 0) {
+                fs.defines += ";_AFXDLL";
+            }
+
+            const auto useOfAtlIt = properties.find("UseOfAtl");
+            if (useOfAtlIt != properties.end() &&
+                caseInsensitiveStringCompare(useOfAtlIt->second, "Dynamic") == 0) {
+                fs.defines += ";_ATL_DLL";
+            }
+
+            std::string runtimeLibrary;
+            const auto runtimeLibraryIt = properties.find("RuntimeLibrary");
+            if (runtimeLibraryIt != properties.end())
+                runtimeLibrary = runtimeLibraryIt->second;
+
+            if (runtimeLibrary.empty()) {
+                const auto useDebugLibrariesIt = properties.find("UseDebugLibraries");
+                const bool debug = useDebugLibrariesIt != properties.end() &&
+                                   caseInsensitiveStringCompare(useDebugLibrariesIt->second, "true") == 0;
+                runtimeLibrary = debug ? "MultiThreadedDebugDLL" : "MultiThreadedDLL";
+            }
+
+            if (caseInsensitiveStringCompare(runtimeLibrary, "MultiThreadedDebugDLL") == 0)
+                fs.defines += ";_MT;_DLL;_DEBUG";
+            else if (caseInsensitiveStringCompare(runtimeLibrary, "MultiThreadedDLL") == 0)
+                fs.defines += ";_MT;_DLL";
+            else if (caseInsensitiveStringCompare(runtimeLibrary, "MultiThreadedDebug") == 0)
+                fs.defines += ";_MT;_DEBUG";
+            else if (caseInsensitiveStringCompare(runtimeLibrary, "MultiThreaded") == 0)
+                fs.defines += ";_MT";
 
             std::string defines = fs.defines;
             if (!compile.get("PreprocessorDefinitions").empty())

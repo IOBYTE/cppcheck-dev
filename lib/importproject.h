@@ -90,7 +90,7 @@ public:
     };
     enum class ImportResult : std::uint8_t {
         Ok,
-        Cycle,         // MSBuild silently ignores circular imports; treat as Ok-level
+        Cycle,         // Visual Studio/MSBuild reports a circular import; continue safely
         NotResolvable,
         NotFound,
         NotValid,
