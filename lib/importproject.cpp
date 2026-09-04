@@ -1023,12 +1023,20 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         }
         // $([System.Environment]::GetFolderPath(SpecialFolder.X))
         if (caseInsensitiveStringCompare(member, "GetFolderPath") == 0 && args.size() == 1) {
-            if (caseInsensitiveStringCompare(args[0], "ProgramFiles") == 0) {
+            std::string folderName = args[0];
+            static constexpr char specialFolderPrefix[] = "SpecialFolder.";
+            if (folderName.size() > sizeof(specialFolderPrefix) - 1 &&
+                caseInsensitiveStringCompare(folderName.substr(0, sizeof(specialFolderPrefix) - 1),
+                                             specialFolderPrefix) == 0) {
+                folderName.erase(0, sizeof(specialFolderPrefix) - 1);
+            }
+
+            if (caseInsensitiveStringCompare(folderName, "ProgramFiles") == 0) {
                 const char *pf = std::getenv("ProgramFiles");
                 return pf ? pf : "";
             }
 
-            if (caseInsensitiveStringCompare(args[0], "ProgramFilesX86") == 0) {
+            if (caseInsensitiveStringCompare(folderName, "ProgramFilesX86") == 0) {
                 const char *pf86 = std::getenv("ProgramFiles(x86)");
                 if (pf86)
                     return pf86;
@@ -1398,7 +1406,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
     // $([System.IO.FileInfo]::new('path')) / $([System.IO.DirectoryInfo]::new('path'))
     // Model as a normalized path string so .FullName / .DirectoryName / .Name chains work.
     if ((caseInsensitiveStringCompare(className, "System.IO.FileInfo") == 0 ||
-        caseInsensitiveStringCompare(className, "System.IO.DirectoryInfo") == 0) &&
+         caseInsensitiveStringCompare(className, "System.IO.DirectoryInfo") == 0) &&
         caseInsensitiveStringCompare(member, "new") == 0 && !args.empty()) {
         std::string path = Path::fromNativeSeparators(args[0]);
 
@@ -3301,19 +3309,6 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     }
 }
 
-std::vector<std::string> ImportProject::expandItemSpecFiles(const std::string &spec,
-                                                            const std::string &projectDir,
-                                                            const PropertiesMap &properties)
-{
-    const std::vector<std::pair<std::string, std::string>> specs = expandItemSpec(spec, projectDir, properties);
-    std::vector<std::string> files;
-    files.reserve(specs.size());
-    for (const std::pair<std::string, std::string> &p : specs)
-        // cppcheck-suppress useStlAlgorithm
-        files.push_back(p.second);
-    return files;
-}
-
 // Expand a semicolon-separated MSBuild item spec (possibly containing
 // $(Property) references) into a list of resolved absolute paths.
 // Segments containing glob wildcards (* ?) are logged to debugs and omitted.
@@ -4029,15 +4024,15 @@ bool ImportProject::importVcxproj(const std::string &filename,
             } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
                 for (const tinyxml2::XMLElement *pcNode = node->FirstChildElement("ProjectConfiguration");
                      pcNode; pcNode = pcNode->NextSiblingElement("ProjectConfiguration")) {
-                    const ProjectConfiguration pc(pcNode);
-                    if (!pc.configuration.empty()) {
+                    const ProjectConfiguration pc1(pcNode);
+                    if (!pc1.configuration.empty()) {
                         const bool already = std::any_of(projectConfigurationList.cbegin(),
                                                          projectConfigurationList.cend(),
-                                                         [&pc](const ProjectConfiguration &existing) {
-                            return existing.name == pc.name;
+                                                         [&pc1](const ProjectConfiguration &existing) {
+                            return existing.name == pc1.name;
                         });
                         if (!already) {
-                            projectConfigurationList.emplace_back(pc);
+                            projectConfigurationList.emplace_back(pc1);
                             mAllVSConfigs.insert(pc.configuration);
                         }
                     }
