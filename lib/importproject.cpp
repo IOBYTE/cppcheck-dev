@@ -2678,22 +2678,25 @@ private:
         return expander.expand();
     }
 
+    template<typename T>
+    bool applyComparison(const T &lhsValue, const T &rhsValue, const std::string &op) const {
+        if (op == "==")
+            return lhsValue == rhsValue;
+        if (op == "!=")
+            return lhsValue != rhsValue;
+        if (op == "<")
+            return lhsValue < rhsValue;
+        if (op == ">")
+            return lhsValue > rhsValue;
+        if (op == "<=")
+            return lhsValue <= rhsValue;
+        if (op == ">=")
+            return lhsValue >= rhsValue;
+        throw std::invalid_argument("Unsupported operation: " + op);
+    }
+
     bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const
     {
-        auto applyComparison = [&op](auto lhsValue, auto rhsValue) {
-            if (op == "==")
-                return lhsValue == rhsValue;
-            if (op == "!=")
-                return lhsValue != rhsValue;
-            if (op == "<")
-                return lhsValue < rhsValue;
-            if (op == ">")
-                return lhsValue > rhsValue;
-            if (op == "<=")
-                return lhsValue <= rhsValue;
-            return lhsValue >= rhsValue; // >=
-        };
-
         // MSBuild keyword "Current" represents the installed toolset version.
         MSBuildVersion currentVersion;
         const auto it = mVariables.find("VisualStudioVersion");
@@ -2719,7 +2722,7 @@ private:
         long lhsInt = 0;
         long rhsInt = 0;
         if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt))
-            return applyComparison(lhsInt, rhsInt);
+            return applyComparison<long>(lhsInt, rhsInt, op);
 
         // Then it tries boolean comparison.
         const auto parseBoolean = [](const std::string &value, bool &result) {
@@ -2737,7 +2740,7 @@ private:
         bool lhsBool = false;
         bool rhsBool = false;
         if (parseBoolean(lhs, lhsBool) && parseBoolean(rhs, rhsBool))
-            return applyComparison(lhsBool, rhsBool);
+            return applyComparison<bool>(lhsBool, rhsBool, op);
 
         // Then it tries Version comparison.
         const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
@@ -3397,15 +3400,15 @@ void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
             updateItems.cbegin(),
             updateItems.cend(),
             [&compile](const std::pair<std::string, std::string> &item) {
-                return Path::sameFileName(item.second, compile.filename);
+            return Path::sameFileName(item.second, compile.filename);
         });
 
         if (!matches)
             continue;
 
         for (const tinyxml2::XMLElement *child = node->FirstChildElement();
-            child;
-            child = child->NextSiblingElement()) {
+             child;
+             child = child->NextSiblingElement()) {
             applyClCompileChild(child, properties, compile.metadata);
         }
 
@@ -3429,7 +3432,7 @@ void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
             removeItems.cbegin(),
             removeItems.cend(),
             [&it](const std::pair<std::string, std::string> &item) {
-                return Path::sameFileName(item.second, it->filename);
+            return Path::sameFileName(item.second, it->filename);
         });
 
         if (matches)
