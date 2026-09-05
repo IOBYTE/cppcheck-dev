@@ -2681,7 +2681,7 @@ private:
     }
 
     template<typename T>
-    bool applyComparison(const T &lhsValue, const T &rhsValue, const std::string &op) const {
+    static bool applyComparison(const T &lhsValue, const T &rhsValue, const std::string &op) {
         if (op == "==")
             return lhsValue == rhsValue;
         if (op == "!=")
