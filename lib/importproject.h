@@ -218,7 +218,7 @@ private:
                                const PropertiesMap &properties,
                                const MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList);
-    ImportResult importChoose(const tinyxml2::XMLElement *choose,
+    ImportResult importChoose(const tinyxml2::XMLElement *node,
                               const std::string &baseDir,
                               PropertiesMap &properties,
                               MetadataMap &metadata,
