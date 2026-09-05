@@ -1623,10 +1623,9 @@ struct ImportProject::PropertyValueExpander {
         if (name.empty() || !hasValue(name)) {
             const std::size_t end = findMatchingParen(mStr, start + 2);
             mPos = (end != std::string::npos) ? end + 1 : mStr.size();
-            if (!name.empty() && isSymbolicProperty(name))
-                return mStr.substr(start, mPos - start);
-            return std::string();
+            return mStr.substr(start, mPos - start);
         }
+
         std::string value = lookup(name);
         // Parse optional .Method(args) chain.
         while (mPos < mStr.size() && mStr[mPos] == '.') {
@@ -3555,11 +3554,6 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     const char *projectAttribute = node->Attribute("Project");
     if (!projectAttribute)
         return ImportResult::Ok;
-    if (std::strcmp(projectAttribute, "$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props") == 0) {
-        printf("%s\n", projectAttribute);
-    }
-
-
     // During the discovery pass, re-run as a Properties-phase import but silently
     // discard any errors/debugs it generates -- approximate properties cause many
     // spurious failures that would confuse the user.
