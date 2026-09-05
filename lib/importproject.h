@@ -263,7 +263,7 @@ private:
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
     // Decide whether an <Import> / <ImportGroup> element is taken.
-    // MSBuild resolves the import graph exactly once, while evaluating properties; the
+    // MSBuild resolves the import graph exactly once, while evaluating properties.
     // During an ordered Evaluate pass this evaluates Import conditions at the point
     // where the Import is encountered. The graph's imported set still suppresses a
     // subsequent import of the same file, but conditions are not replayed from an

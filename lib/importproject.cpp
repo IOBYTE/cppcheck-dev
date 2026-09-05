@@ -2694,7 +2694,7 @@ private:
             return lhsValue <= rhsValue;
         if (op == ">=")
             return lhsValue >= rhsValue;
-        throw std::invalid_argument("Unsupported operation: " + op);
+        throw std::runtime_error("Unsupported operation: " + op);
     }
 
     bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const
@@ -3555,6 +3555,11 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     const char *projectAttribute = node->Attribute("Project");
     if (!projectAttribute)
         return ImportResult::Ok;
+    if (std::strcmp(projectAttribute, "$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props") == 0) {
+        printf("%s\n", projectAttribute);
+    }
+
+
     // During the discovery pass, re-run as a Properties-phase import but silently
     // discard any errors/debugs it generates -- approximate properties cause many
     // spurious failures that would confuse the user.
