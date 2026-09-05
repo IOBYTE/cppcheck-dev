@@ -1254,8 +1254,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 }
                 // Unrecognised specifier -- return the raw argument unchanged and log
                 // so that MSBuild incompatibilities are visible rather than silent.
-                this->debugs.emplace_back(
-                    "String.Format: unsupported format specifier '" + spec + "'");
+                this->debugs.emplace_back("String.Format: unsupported format specifier '" + spec + "'");
                 return arg;
             };
 
@@ -1450,16 +1449,28 @@ struct ImportProject::PropertyValueExpander {
     const PropertiesMap &mVars;
     std::string mStr;
     std::size_t mPos{0};
-    bool mChanged{false};
-    bool mReplaceUnknown{false};  // if true, unknown variables expand to ""
 
     PropertyValueExpander(ImportProject &project, const PropertiesMap &vars, std::string str)
         : mProject(project),mVars(vars), mStr(std::move(str)) {}
 
-    bool isKnown(const std::string &name) const {
+    bool hasValue(const std::string &name) const {
         if (mVars.count(name))
             return true;
         return std::getenv(name.c_str()) != nullptr;
+    }
+
+    // These properties are supplied by Visual Studio/MSBuild infrastructure,
+    // but may intentionally remain unresolved when importing on a host without
+    // Visual Studio installed. Keep them symbolic so the importer can recognize
+    // and emulate the corresponding imports.
+    static bool isSymbolicProperty(const std::string &name) {
+        return name == "VCTargetsPath" ||
+               name == "MSBuildExtensionsPath" ||
+               name == "MSBuildExtensionsPath32" ||
+               name == "MSBuildExtensionsPath64" ||
+               name == "VCInstallDir" ||
+               name == "VsInstallDir" ||
+               name == "VsInstallRoot";
     }
 
     std::string lookup(const std::string &name) const {
@@ -1558,7 +1569,9 @@ struct ImportProject::PropertyValueExpander {
 
     // Parses and evaluates $(Name[.Method(args)...]) starting at mPos.
     // Also handles $([ClassName]::Method(args)) static property functions.
-    // If the variable is unknown the token is left unchanged and mPos advances past it.
+    // Unknown properties expand to the empty string, except for explicitly
+    // recognized Visual Studio/MSBuild infrastructure properties which remain
+    // symbolic for importer/emulation detection.
     std::string tryParseExpr() {
         const std::size_t start = mPos;
         mPos += 2;  // skip "$("
@@ -1575,7 +1588,6 @@ struct ImportProject::PropertyValueExpander {
                 ++mPos;  // skip '('
                 args = parseArgList();
             }
-            mChanged = true;
             std::string value = mProject.applyMSBuildStaticFunction(className, member, args, &mVars);
             // Handle optional .Property or .Method(args) chain on the result,
             // e.g. $([System.IO.FileInfo]::new('path').DirectoryName).
@@ -1608,16 +1620,13 @@ struct ImportProject::PropertyValueExpander {
         }
 
         const std::string name = parseIdentifier();
-        if (name.empty() || !isKnown(name)) {
+        if (name.empty() || !hasValue(name)) {
             const std::size_t end = findMatchingParen(mStr, start + 2);
             mPos = (end != std::string::npos) ? end + 1 : mStr.size();
-            if (mReplaceUnknown) {
-                mChanged = true;
-                return std::string();
-            }
-            return mStr.substr(start, mPos - start);
+            if (!name.empty() && isSymbolicProperty(name))
+                return mStr.substr(start, mPos - start);
+            return std::string();
         }
-        mChanged = true;
         std::string value = lookup(name);
         // Parse optional .Method(args) chain.
         while (mPos < mStr.size() && mStr[mPos] == '.') {
@@ -1649,25 +1658,20 @@ struct ImportProject::PropertyValueExpander {
         return value;
     }
 
-    // Expand all property expressions in mStr, multi-pass (capped at 50).
+    // Expand all property expressions in mStr in a single left-to-right pass.
+    // Property values are already evaluated when assigned; do not re-evaluate
+    // newly produced $(...) references in later passes.
     std::string expand() {
-        const int maxPasses = 50;
-        for (int pass = 0; pass < maxPasses; ++pass) {
-            mChanged = false;
-            mPos = 0;
-            std::string result;
-            result.reserve(mStr.size());
-            while (mPos < mStr.size()) {
-                if (mStr.compare(mPos, 2, "$(") == 0)
-                    result += tryParseExpr();
-                else
-                    result += mStr[mPos++];
-            }
-            mStr = std::move(result);
-            if (!mChanged)
-                break;
+        mPos = 0;
+        std::string result;
+        result.reserve(mStr.size());
+        while (mPos < mStr.size()) {
+            if (mStr.compare(mPos, 2, "$(") == 0)
+                result += tryParseExpr();
+            else
+                result += mStr[mPos++];
         }
-        return mStr;
+        return result;
     }
 };
 
@@ -2671,10 +2675,8 @@ private:
     }
 
     std::string expandProperties(const std::string &input) const {
-        // Delegate to PropertyValueExpander. In condition context unknown
-        // variables must expand to "" (MSBuild semantics for quoted strings).
+        // Conditions use the same single-pass property expansion semantics.
         PropertyValueExpander expander{mProject, mVariables, input};
-        expander.mReplaceUnknown = true;
         return expander.expand();
     }
 
@@ -3086,18 +3088,12 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     // stored with '/' and debug messages show normalized paths.
     text = Path::fromNativeSeparators(std::move(text));
     const std::string selfRef = "$(" + std::string(eName) + ")";
-    // Pre-expand the prior value before embedding it so tokens already resolvable
-    // in this context are expanded inside `original` rather than being re-evaluated
-    // in the combined string.  This reduces the risk that step-3 cleanup erases
-    // content that legitimately arrived through the accumulated value.
-    std::string original = properties[eName];
-    expandMSBuildVariables(original, properties);
-    findAndReplace(original, selfRef, "");   // break any tainted self-ref in original
+    // Properties are evaluated at assignment time. Only the explicit self-reference
+    // used for MSBuild-style accumulation needs to be substituted from the old value.
+    const auto it = properties.find(eName);
+    const std::string original = (it != properties.end()) ? it->second : std::string();
     findAndReplace(text, selfRef, original);
     expandMSBuildVariables(text, properties);
-    // Safety net: erase self-references that survived (e.g. a token whose expansion
-    // is not yet available), matching MSBuild's "undefined = empty string" rule.
-    findAndReplace(text, selfRef, "");
     properties[eName] = text;
     checkUnexpandedExpressions(text, eName);
 }
