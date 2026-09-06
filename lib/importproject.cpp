@@ -3353,8 +3353,10 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
         if (c == ';') {
             // Trim leading/trailing whitespace.
             std::size_t lo = 0, hi = seg.size();
-            while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo]))) ++lo;
-            while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1]))) --hi;
+            while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo])))
+                ++lo;
+            while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1])))
+                --hi;
             if (lo < hi) {
                 const std::string trimmed = seg.substr(lo, hi - lo);
                 const std::string decoded = msbuildUnescape(trimmed);
