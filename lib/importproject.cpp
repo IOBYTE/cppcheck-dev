@@ -281,6 +281,14 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
     fs.defines.swap(defs);
 }
 
+void ImportProject::addDebug(const std::string &msg) {
+    for (const auto &debug : debugs) {
+        if (debug == msg)
+            return;
+    }
+    debugs.emplace_back(msg);
+}
+
 // Find the ')' that matches the '(' at position parenPos.
 // Tracks depth for every '(' and ')', not just '$(' pairs: bare parentheses
 // inside static-function argument lists (e.g. Pow(2,3), Format(...)) must
@@ -836,14 +844,14 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     return std::to_string(a * b);
                 if (caseInsensitiveStringCompare(member, "Divide") == 0) {
                     if (b == 0) {
-                        debugs.emplace_back("MSBuild::Divide: division by zero");
+                        addDebug("MSBuild::Divide: division by zero");
                         return std::string();
                     }
                     return std::to_string(a / b);
                 }
                 if (caseInsensitiveStringCompare(member, "Modulo") == 0) {
                     if (b == 0) {
-                        debugs.emplace_back("MSBuild::Modulo: division by zero");
+                        addDebug("MSBuild::Modulo: division by zero");
                         return std::string();
                     }
                     return std::to_string(a % b);
@@ -899,7 +907,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         // RootRelative, or DriveRelative) resets the accumulated path.
         if (caseInsensitiveStringCompare(member, "NormalizePath") == 0) {
             if (args.empty()) {
-                debugs.emplace_back("NormalizePath: called with no arguments");
+                addDebug("NormalizePath: called with no arguments");
                 return "";
             }
             // If any arg still contains an unexpanded $(...) reference, the property was
@@ -908,7 +916,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             for (const std::string &a : args) {
                 // cppcheck-suppress useStlAlgorithm
                 if (a.find("$(") != std::string::npos) {
-                    debugs.emplace_back("NormalizePath: arg contains unexpanded property reference: " + a);
+                    addDebug("NormalizePath: arg contains unexpanded property reference: " + a);
                     return "";
                 }
             }
@@ -916,7 +924,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             for (std::size_t i = 1; i < args.size(); ++i) {
                 // cppcheck-suppress useStlAlgorithm
                 if (!pathCombineAppend(result, args[i], true)) {
-                    debugs.emplace_back("NormalizePath: could not combine path segments");
+                    addDebug("NormalizePath: could not combine path segments");
                     return "";
                 }
             }
@@ -929,7 +937,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         // but always returns a path with a trailing slash.
         if (caseInsensitiveStringCompare(member, "NormalizeDirectory") == 0) {
             if (args.empty()) {
-                debugs.emplace_back("NormalizeDirectory: called with no arguments");
+                addDebug("NormalizeDirectory: called with no arguments");
                 return "";
             }
             // Reuse NormalizePath logic via recursive call with renamed member.
@@ -1077,7 +1085,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             for (std::size_t i = 1; i < args.size(); ++i) {
                 // cppcheck-suppress useStlAlgorithm
                 if (!pathCombineAppend(result, args[i], true)) {
-                    debugs.emplace_back("Path.Combine: could not combine path segments");
+                    addDebug("Path.Combine: could not combine path segments");
                     return "";
                 }
             }
@@ -1126,7 +1134,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 case PathKind::DriveRelative:
                     // "C:foo" requires the per-drive current directory for drive C:,
                     // a Windows kernel concept unavailable in a cross-platform context.
-                    debugs.emplace_back("GetFullPath: drive-relative path cannot be resolved: " + path);
+                    addDebug("GetFullPath: drive-relative path cannot be resolved: " + path);
                     return "";
                 default: {
                     std::string combined = basePath;
@@ -1254,7 +1262,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 }
                 // Unrecognised specifier -- return the raw argument unchanged and log
                 // so that MSBuild incompatibilities are visible rather than silent.
-                this->debugs.emplace_back("String.Format: unsupported format specifier '" + spec + "'");
+                this->addDebug("String.Format: unsupported format specifier '" + spec + "'");
                 return arg;
             };
 
@@ -1416,7 +1424,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
         return Path::simplifyPath(std::move(path));
     }
     // Unknown class or method -- return empty so import continues
-    debugs.emplace_back("unknown class " + className + " or member " + member);
+    addDebug("unknown class " + className + " or member " + member);
     return "";
 }
 
@@ -1457,20 +1465,6 @@ struct ImportProject::PropertyValueExpander {
         if (mVars.count(name))
             return true;
         return std::getenv(name.c_str()) != nullptr;
-    }
-
-    // These properties are supplied by Visual Studio/MSBuild infrastructure,
-    // but may intentionally remain unresolved when importing on a host without
-    // Visual Studio installed. Keep them symbolic so the importer can recognize
-    // and emulate the corresponding imports.
-    static bool isSymbolicProperty(const std::string &name) {
-        return name == "VCTargetsPath" ||
-               name == "MSBuildExtensionsPath" ||
-               name == "MSBuildExtensionsPath32" ||
-               name == "MSBuildExtensionsPath64" ||
-               name == "VCInstallDir" ||
-               name == "VsInstallDir" ||
-               name == "VsInstallRoot";
     }
 
     std::string lookup(const std::string &name) const {
@@ -1548,7 +1542,7 @@ struct ImportProject::PropertyValueExpander {
         else if (caseInsensitiveStringCompare(method, "Name") == 0)
             value = stripDirectoryPart(Path::fromNativeSeparators(value));
         else
-            mProject.debugs.emplace_back("unhandled property access '." + method + "'" + context);
+            mProject.addDebug("unhandled property access '." + method + "'" + context);
     }
 
     // Parse a ')'-terminated comma-separated arg list starting at mPos (which
@@ -1609,9 +1603,9 @@ struct ImportProject::PropertyValueExpander {
                 try {
                     value = applyPropertyMethod(value, chainMethod, chainArgs);
                 } catch (const std::exception &e) {
-                    mProject.debugs.emplace_back(std::string("applyPropertyMethod (chained): ") + e.what());
+                    mProject.addDebug(std::string("applyPropertyMethod (chained): ") + e.what());
                 } catch (...) {
-                    mProject.debugs.emplace_back("applyPropertyMethod (chained): unknown error for method '" + chainMethod + "'");
+                    mProject.addDebug("applyPropertyMethod (chained): unknown error for method '" + chainMethod + "'");
                 }
             }
             if (mPos < mStr.size() && mStr[mPos] == ')') // skip outer ')'
@@ -1647,9 +1641,9 @@ struct ImportProject::PropertyValueExpander {
             try {
                 value = applyPropertyMethod(value, method, args);
             } catch (const std::exception &e) {
-                mProject.debugs.emplace_back(std::string("applyPropertyMethod: ") + e.what());
+                mProject.addDebug(std::string("applyPropertyMethod: ") + e.what());
             } catch (...) {
-                mProject.debugs.emplace_back("applyPropertyMethod: unknown error for method '" + method + "'");
+                mProject.addDebug("applyPropertyMethod: unknown error for method '" + method + "'");
             }
         }
         if (mPos < mStr.size() && mStr[mPos] == ')') // skip closing ')'
@@ -2077,7 +2071,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
                 << (context ? " in " : "")
                 << (context ? context : "")
                 << ": " << text;
-        debugs.emplace_back(message.str());
+        addDebug(message.str());
         pos = end + 1;
     }
     pos = 0;
@@ -2092,7 +2086,7 @@ void ImportProject::checkUnexpandedExpressions(const std::string &text, const ch
                 << (context ? " in " : "")
                 << (context ? context : "")
                 << ": " << text;
-        debugs.emplace_back(message.str());
+        addDebug(message.str());
         pos = end + 1;
     }
 }
@@ -2565,7 +2559,7 @@ private:
                         else if (caseInsensitiveStringCompare(chainMethod, "Name") == 0)
                             value = stripDirectoryPart(Path::fromNativeSeparators(value));
                         else
-                            mProject.debugs.emplace_back("unhandled property access '." + chainMethod + "' after static function in condition");
+                            mProject.addDebug("unhandled property access '." + chainMethod + "' after static function in condition");
                     }
                     continue;
                 }
@@ -2603,7 +2597,7 @@ private:
                     else if (caseInsensitiveStringCompare(method, "Name") == 0)
                         value = stripDirectoryPart(Path::fromNativeSeparators(value));
                     else
-                        mProject.debugs.emplace_back("unhandled property access '." + method + "' in condition");
+                        mProject.addDebug("unhandled property access '." + method + "' in condition");
                 }
                 continue;
             }
@@ -2766,7 +2760,7 @@ bool ImportProject::evalCondition(const std::string &condition, const Properties
         // Malformed or unsupported condition syntax.  Log so callers can
         // distinguish "evaluated false" from "could not be evaluated" -- the
         // build behavior (treat as false and continue) is unchanged.
-        debugs.emplace_back(std::string("condition unsupported: '") + condition + "': " + e.what());
+        addDebug(std::string("condition unsupported: '") + condition + "': " + e.what());
         return false;
     }
 }
@@ -2856,10 +2850,10 @@ bool ImportProject::importTaken(const tinyxml2::XMLElement *node, const char *no
     // the condition against a different property state. Normal Visual Studio
     // evaluation never takes this branch because imports are evaluated in place.
     const char *proj = attrName ? node->Attribute(attrName) : nullptr;
-    debugs.emplace_back("import graph replay: no recorded decision for <" +
-                        std::string(nodeName) +
-                        (proj ? std::string(" Project=\"") + proj + "\"" : std::string()) +
-                        "> in " + key + " - skipping import");
+    addDebug("import graph replay: no recorded decision for <" +
+             std::string(nodeName) +
+             (proj ? std::string(" Project=\"") + proj + "\"" : std::string()) +
+             "> in " + key + " - skipping import");
     return false;
 }
 
@@ -3017,7 +3011,7 @@ std::string ImportProject::toAbsolute(const std::string &filename, const std::st
         // "C:foo" is relative to the current directory of drive C:, a per-drive
         // CWD that is a Windows kernel concept unavailable in a cross-platform
         // context.  Return the path unmodified rather than inventing a wrong base.
-        debugs.emplace_back("toAbsolute: drive-relative path cannot be resolved: " + resolved);
+        addDebug("toAbsolute: drive-relative path cannot be resolved: " + resolved);
         return resolved;
     default:
         return Path::simplifyPath(baseDir + resolved);
@@ -3366,7 +3360,7 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
                 const std::string decoded = msbuildUnescape(trimmed);
                 if (decoded.find('*') != std::string::npos ||
                     decoded.find('?') != std::string::npos) {
-                    debugs.emplace_back("ClCompile item glob not supported, skipped: '" + decoded + "'");
+                    addDebug("ClCompile item glob not supported, skipped: '" + decoded + "'");
                 } else
                     result.emplace_back(decoded, toAbsolute(decoded, projectDir, properties));
             }
@@ -3571,7 +3565,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     if (extension == ".props" || extension == ".targets" || extension == ".vcxitems") {
         const char *sdk = node->Attribute("Sdk");
         if (sdk) {
-            debugs.emplace_back("Could not import \"" + file + "\" - " + " (Sdk not supported)");
+            addDebug("Could not import \"" + file + "\" - " + " (Sdk not supported)");
             return ImportResult::NotResolvable;
         }
 
@@ -3592,7 +3586,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             // Microsoft.Common.targets (imported by Microsoft.Cpp.targets) sets
@@ -3610,7 +3604,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             if (!directoryBuildTargets.empty()) {
                 ImportResult result = importImport(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             it = properties.find("ForceImportAfterCppTargets");
@@ -3618,7 +3612,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3630,7 +3624,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             // Emulate key side-effects here, including the Directory.Build.props import that
@@ -3643,7 +3637,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             if (!directoryBuildProps.empty()) {
                 ImportResult result = importImport(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             // Emulate key defaults set by Microsoft.Cpp.Default.props (properties only).
@@ -3683,7 +3677,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3698,7 +3692,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             if (phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) {
@@ -3727,7 +3721,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
                 const std::string importFile = it->second;
                 ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
-                    debugs.emplace_back("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
 
             return ImportResult::Ok;
@@ -3735,12 +3729,12 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
 
         ImportResult result = importImport(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
         if (result > ImportResult::NotResolvable)
-            debugs.emplace_back("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
+            addDebug("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
         if (result == ImportResult::NotResolvable) {
-            debugs.emplace_back("Could not import \"" + file + "\" - " + importResultStr(result));
+            addDebug("Could not import \"" + file + "\" - " + importResultStr(result));
         }
     } else {
-        debugs.emplace_back("Could not import \"" + file + "\" unsupported extension " + extension);
+        addDebug("Could not import \"" + file + "\" unsupported extension " + extension);
     }
     return ImportResult::Ok;
 }
@@ -3760,7 +3754,7 @@ ImportProject::ImportResult ImportProject::importImportGroup(const tinyxml2::XML
             if (result > ImportResult::NotResolvable) {
                 if (phase != EvalPhase::Discover) {
                     const char *proj = e->Attribute("Project");
-                    debugs.emplace_back("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
+                    addDebug("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
                 }
                 ret = std::max(result, ret);
             }
@@ -3911,7 +3905,7 @@ ImportProject::ImportResult ImportProject::importImport(const std::string &file,
     // Studio evaluation does not replay the import graph.
     if (mImportGraph.active && !mImportGraph.imported.insert(simplifiedFilename).second) {
         if (!mImportGraph.replay)
-            debugs.emplace_back("\"" + filename + "\" was already imported - this subsequent import is ignored");
+            addDebug("\"" + filename + "\" was already imported - this subsequent import is ignored");
         return ImportResult::Ok;
     }
 
@@ -4116,7 +4110,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                                                                     compileList, projectConfigurationList, importStack,
                                                                     EvalPhase::Evaluate);
         if (evaluationResult > ImportResult::NotResolvable)
-            debugs.emplace_back("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(evaluationResult));
+            addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(evaluationResult));
 
         // # TODO: support signedness of char via /J (and potential XML option for it)?
         // we can only set it globally but in this context it needs to be treated per file

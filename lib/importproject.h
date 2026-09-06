@@ -278,6 +278,7 @@ private:
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, const PropertiesMap &properties);
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);
+    void addDebug(const std::string &msg);
 
     /// Import bookkeeping for one project-configuration evaluation.
     /// In the ordered Evaluate pass, conditions are evaluated live and the imported
