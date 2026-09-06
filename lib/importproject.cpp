@@ -283,6 +283,7 @@ void ImportProject::fsSetDefines(FileSettings& fs, std::string defs)
 
 void ImportProject::addDebug(const std::string &msg) {
     for (const auto &debug : debugs) {
+        // cppcheck-suppress useStlAlgorithm
         if (debug == msg)
             return;
     }
@@ -3219,8 +3220,8 @@ void ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
     if (!eName || !conditionIsTrue(e1, properties))
         return;
 
-    const char *text = e1->GetText();
     if (std::strcmp(eName, "ExcludedFromBuild") == 0) {
+        const char *text = e1->GetText();
         std::string val(text ? text : "");
         trimWhitespace(val);
         expandMSBuildVariables(val, properties);
