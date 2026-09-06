@@ -1457,9 +1457,10 @@ struct ImportProject::PropertyValueExpander {
     const PropertiesMap &mVars;
     std::string mStr;
     std::size_t mPos{0};
+    bool mUnknownAsEmpty{ false };
 
-    PropertyValueExpander(ImportProject &project, const PropertiesMap &vars, std::string str)
-        : mProject(project),mVars(vars), mStr(std::move(str)) {}
+    PropertyValueExpander(ImportProject &project, const PropertiesMap &vars, std::string str, bool unknownAsEmpty = false)
+        : mProject(project), mVars(vars), mStr(std::move(str)), mUnknownAsEmpty(unknownAsEmpty) {}
 
     bool hasValue(const std::string &name) const {
         if (mVars.count(name))
@@ -1617,7 +1618,7 @@ struct ImportProject::PropertyValueExpander {
         if (name.empty() || !hasValue(name)) {
             const std::size_t end = findMatchingParen(mStr, start + 2);
             mPos = (end != std::string::npos) ? end + 1 : mStr.size();
-            return mStr.substr(start, mPos - start);
+            return mUnknownAsEmpty ? std::string() : mStr.substr(start, mPos - start);
         }
 
         std::string value = lookup(name);
@@ -2669,7 +2670,7 @@ private:
 
     std::string expandProperties(const std::string &input) const {
         // Conditions use the same single-pass property expansion semantics.
-        PropertyValueExpander expander{mProject, mVariables, input};
+        PropertyValueExpander expander{mProject, mVariables, input, true};
         return expander.expand();
     }
 
@@ -2827,34 +2828,9 @@ bool ImportProject::importTaken(const tinyxml2::XMLElement *node, const char *no
     if (attrName && !node->Attribute(attrName))
         return false;
 
-    if (!mImportGraph.active)
-        return conditionIsTrue(node, properties);
-
-    // The file currently being walked is identified by MSBuildThisFileFullPath, which
-    // importVcxproj() sets for the project and MSBuildThis sets for every imported file.
-    const auto thisFile = properties.find("MSBuildThisFileFullPath");
-    const std::string key = importFileKey(thisFile != properties.end() ? thisFile->second : std::string());
-    std::vector<bool> &decisions = mImportGraph.decisions[key];
-
-    if (!mImportGraph.replay) {
-        const bool taken = conditionIsTrue(node, properties);
-        decisions.push_back(taken);
-        return taken;
-    }
-
-    std::size_t &cursor = mImportGraph.cursor[key];
-    if (cursor < decisions.size())
-        return decisions[cursor++];
-
-    // Legacy replay traversal: if there is no recorded decision, do not re-evaluate
-    // the condition against a different property state. Normal Visual Studio
-    // evaluation never takes this branch because imports are evaluated in place.
-    const char *proj = attrName ? node->Attribute(attrName) : nullptr;
-    addDebug("import graph replay: no recorded decision for <" +
-             std::string(nodeName) +
-             (proj ? std::string(" Project=\"") + proj + "\"" : std::string()) +
-             "> in " + key + " - skipping import");
-    return false;
+    // Visual Studio and MSBuild evaluate project dependencies line-by-line.
+    // Conditional expressions are evaluated live where they are structurally encountered.
+    return conditionIsTrue(node, properties);
 }
 
 namespace {
@@ -3069,6 +3045,25 @@ void ImportProject::fsSetIncludePaths(FileSettings &fs, const std::string &basep
     }
 }
 
+static void findAndReplaceCaseInsensitive(std::string &s,
+                                         const std::string &search,
+                                         const std::string &replacement)
+{
+    if (search.empty())
+        return;
+
+    std::size_t pos = 0;
+    while ((pos = s.find(search[0], pos)) != std::string::npos) {
+        if (pos + search.size() <= s.size() &&
+            caseInsensitiveStringCompare(s.substr(pos, search.size()), search) == 0) {
+            s.replace(pos, search.size(), replacement);
+            pos += replacement.size();
+        } else {
+            ++pos;
+        }
+    }
+}
+
 void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties) {
     const char *eName = node->Name();
     if (!eName || !conditionIsTrue(node, properties))
@@ -3085,7 +3080,7 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     // used for MSBuild-style accumulation needs to be substituted from the old value.
     const auto it = properties.find(eName);
     const std::string original = (it != properties.end()) ? it->second : std::string();
-    findAndReplace(text, selfRef, original);
+    findAndReplaceCaseInsensitive(text, selfRef, original);
     expandMSBuildVariables(text, properties);
     properties[eName] = text;
     checkUnexpandedExpressions(text, eName);
@@ -3105,26 +3100,23 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     // metadata refs and $(prop) refs inside `original` first, then break any tainted
     // self-references, so they don't propagate into the new value and risk step-3 erasure.
     std::string original = metadata[eName];
-    findAndReplace(original, metaSelfRef, "");
-    {
-        std::string::size_type p = 0;
-        while ((p = original.find("%(", p)) != std::string::npos) {
-            // Use findMatchingParen so nested parens inside a metadata value are
-            // handled correctly.  p points at '%'; p+1 is the opening '('.
-            const std::string::size_type e = findMatchingParen(original, p + 1);
-            if (e == std::string::npos)
-                break;
-            const std::string key = original.substr(p + 2, e - p - 2);
-            const auto it = metadata.find(key);
-            const std::string repl = (it != metadata.end()) ? it->second : std::string();
-            original.replace(p, e - p + 1, repl);
-            p += repl.size();
-        }
+    findAndReplaceCaseInsensitive(original, metaSelfRef, "");
+    std::string::size_type p = 0;
+    while ((p = original.find("%(", p)) != std::string::npos) {
+        // Use findMatchingParen so nested parens inside a metadata value are
+        // handled correctly.  p points at '%'; p+1 is the opening '('.
+        const std::string::size_type e = findMatchingParen(original, p + 1);
+        if (e == std::string::npos)
+            break;
+        const std::string key = original.substr(p + 2, e - p - 2);
+        const auto it = metadata.find(key);
+        const std::string repl = (it != metadata.end()) ? it->second : std::string();
+        original.replace(p, e - p + 1, repl);
+        p += repl.size();
     }
     expandMSBuildVariables(original, properties);
-    findAndReplace(original, propSelfRef, "");
-
-    findAndReplace(text, metaSelfRef, original);
+    findAndReplaceCaseInsensitive(original, propSelfRef, "");
+    findAndReplaceCaseInsensitive(text, metaSelfRef, original);
     std::string::size_type pos = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
         const std::string::size_type end = findMatchingParen(text, pos + 1);
@@ -3144,6 +3136,7 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     findAndReplace(text, propSelfRef, "");
     metadata[eName] = text;
     checkUnexpandedExpressions(text, eName);
+    checkUnexpandedExpressions(text, eName);
 }
 
 std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original) {
@@ -3161,41 +3154,36 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     // Pre-expand `original` (the prior per-item value) before embedding it,
     // matching the same strategy used in addMetadata and addProperty.
     std::string expandedOriginal = original;
-    findAndReplace(expandedOriginal, metaSelfRef, "");
-    {
-        std::string::size_type p = 0;
-        while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
-            const std::string::size_type e = findMatchingParen(expandedOriginal, p + 1);
-            if (e == std::string::npos)
-                break;
-            const std::string key = expandedOriginal.substr(p + 2, e - p - 2);
-            const auto it = metadata.find(key);
-            const std::string repl = (it != metadata.end()) ? it->second : std::string();
-            expandedOriginal.replace(p, e - p + 1, repl);
-            p += repl.size();
-        }
+    findAndReplaceCaseInsensitive(expandedOriginal, metaSelfRef, "");
+    std::string::size_type p = 0;
+    while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
+        const std::string::size_type e = findMatchingParen(expandedOriginal, p + 1);
+        if (e == std::string::npos)
+            break;
+        const std::string key = expandedOriginal.substr(p + 2, e - p - 2);
+        const auto it = metadata.find(key);
+        const std::string repl = (it != metadata.end()) ? it->second : std::string();
+        expandedOriginal.replace(p, e - p + 1, repl);
+        p += repl.size();
     }
     expandMSBuildVariables(expandedOriginal, properties);
-    findAndReplace(expandedOriginal, propSelfRef, "");
-
-    findAndReplace(text, metaSelfRef, expandedOriginal);
-    {
-        std::string::size_type pos = 0;
-        while ((pos = text.find("%(", pos)) != std::string::npos) {
-            const std::string::size_type end = findMatchingParen(text, pos + 1);
-            if (end == std::string::npos)
-                break;
-            const std::string key = text.substr(pos + 2, end - pos - 2);
-            const auto it = metadata.find(key);
-            const std::string replacement = (it != metadata.end()) ? it->second : std::string();
-            text.replace(pos, end - pos + 1, replacement);
-            pos += replacement.size();
-        }
+    findAndReplaceCaseInsensitive(expandedOriginal, propSelfRef, "");
+    findAndReplaceCaseInsensitive(text, metaSelfRef, expandedOriginal);
+    std::string::size_type pos = 0;
+    while ((pos = text.find("%(", pos)) != std::string::npos) {
+        const std::string::size_type end = findMatchingParen(text, pos + 1);
+        if (end == std::string::npos)
+            break;
+        const std::string key = text.substr(pos + 2, end - pos - 2);
+        const auto it = metadata.find(key);
+        const std::string replacement = (it != metadata.end()) ? it->second : std::string();
+        text.replace(pos, end - pos + 1, replacement);
+        pos += replacement.size();
     }
     expandMSBuildVariables(text, properties);
     // Handle $(eName) self-references: same accumulation pattern as addMetadata.
-    findAndReplace(text, propSelfRef, expandedOriginal);
-    findAndReplace(text, propSelfRef, "");
+    findAndReplaceCaseInsensitive(text, propSelfRef, expandedOriginal);
+    findAndReplaceCaseInsensitive(text, propSelfRef, "");
     checkUnexpandedExpressions(text, eName);
     return text;
 }
@@ -3796,52 +3784,49 @@ ImportProject::ImportResult ImportProject::importChoose(const tinyxml2::XMLEleme
 }
 
 ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2::XMLElement *parent,
-                                                                 const std::string &baseDir,
-                                                                 PropertiesMap &properties,
-                                                                 MetadataMap &metadata,
-                                                                 std::list<ItemGroupClCompile> &compileList,
-                                                                 std::list<ProjectConfiguration> &projectConfigurationList,
-                                                                 std::unordered_set<std::string> &importStack,
-                                                                 EvalPhase phase) {
+    const std::string &baseDir,
+    PropertiesMap &properties,
+    MetadataMap &metadata,
+    std::list<ItemGroupClCompile> &compileList,
+    std::list<ProjectConfiguration> &projectConfigurationList,
+    std::unordered_set<std::string> &importStack,
+    EvalPhase phase) {
     ImportResult result = ImportResult::Ok;
 
     for (const tinyxml2::XMLElement *node = parent->FirstChildElement(); node; node = node->NextSiblingElement()) {
         if (hasName(node, "PropertyGroup", properties)) {
-            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
-                    addProperty(child, properties);
-            }
+            // Always parsed in order to sustain cascading evaluation logic
+            for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
+                addProperty(child, properties);
         } else if (hasName(node, "ItemDefinitionGroup", properties)) {
-            if (phase == EvalPhase::ItemDefs || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
-                    if (!hasName(item, "ClCompile", properties))
-                        continue;
+            // Evaluate metadata defaults sequentially to capture preceding overrides
+            for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
+                if (!hasName(item, "ClCompile", properties))
+                    continue;
 
-                    for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
-                        addMetadata(child, properties, metadata);
-                }
+                for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
+                    addMetadata(child, properties, metadata);
             }
         } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover || phase == EvalPhase::Evaluate) {
-                for (const tinyxml2::XMLElement *configuration = node->FirstChildElement("ProjectConfiguration"); configuration; configuration = configuration->NextSiblingElement("ProjectConfiguration")) {
-                    const ProjectConfiguration pc(configuration);
-                    if (pc.configuration.empty())
-                        continue;
+            for (const tinyxml2::XMLElement *configuration = node->FirstChildElement("ProjectConfiguration"); configuration; configuration = configuration->NextSiblingElement("ProjectConfiguration")) {
+                const ProjectConfiguration pc(configuration);
+                if (pc.configuration.empty())
+                    continue;
 
-                    const bool alreadyPresent = std::any_of(projectConfigurationList.cbegin(),
-                                                            projectConfigurationList.cend(),
-                                                            [&pc](const ProjectConfiguration &existing) {
+                const bool alreadyPresent = std::any_of(projectConfigurationList.cbegin(),
+                    projectConfigurationList.cend(),
+                    [&pc](const ProjectConfiguration &existing) {
                         return existing.name == pc.name;
                     });
 
-                    if (!alreadyPresent) {
-                        projectConfigurationList.emplace_back(pc);
-                        mAllVSConfigs.insert(pc.configuration);
-                    }
+                if (!alreadyPresent) {
+                    projectConfigurationList.emplace_back(pc);
+                    mAllVSConfigs.insert(pc.configuration);
                 }
             }
         } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-            if (phase == EvalPhase::Items || phase == EvalPhase::Evaluate) {
+            // Suppress source tracking updates during configuration discovery phase
+            if (phase != EvalPhase::Discover) {
                 for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
                     if (!hasName(item, "ClCompile", properties))
                         continue;
@@ -3854,7 +3839,7 @@ ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2:
                         applyClCompileRemove(item, baseDir, properties, compileList);
                 }
             }
-        } else if (importTaken(node, "ImportGroup", nullptr, properties)) {
+        } else if (hasName(node, "ImportGroup", properties)) {
             const ImportResult importResult = importImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             result = std::max(result, importResult);
         } else if (importTaken(node, "Import", "Project", properties)) {
@@ -3888,39 +3873,25 @@ ImportProject::ImportResult ImportProject::importImport(const std::string &file,
     if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
         filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
 
-    // detect circular property sheet imports (A imports B, B imports A, a file importing
-    // itself, ...) instead of recursing until the stack overflows - mirrors MSBuild's own
-    // import-cycle detection, which errors out rather than looping forever
-    // Normalize to lowercase so that NTFS case variants (Foo.props vs foo.props) are
-    // treated as the same file - mirrors MSBuild's own case-insensitive cycle detection.
-    const std::string simplifiedFilename = importFileKey(filename);
-    if (!importStack.insert(simplifiedFilename).second)
+    const std::string key = importFileKey(filename);
+    // Detect circular imports before duplicate-import suppression.
+    if (!importStack.insert(key).second)
         return ImportResult::Cycle;
 
-    ImportStackGuard guard(importStack, simplifiedFilename);  // erases on any exit from here
+    ImportStackGuard guard(importStack, key);
 
-    // An imported file is processed at most once during an evaluation. A later
-    // <Import> of the same file is ignored (warning MSB4011), so its
-    // properties/metadata are applied once rather than once per import site.
-    // The imported-file set is reset for each real project configuration evaluation.
-    // Legacy replay callers may also use the same bookkeeping, but normal Visual
-    // Studio evaluation does not replay the import graph.
-    if (mImportGraph.active && !mImportGraph.imported.insert(simplifiedFilename).second) {
-        if (!mImportGraph.replay)
-            addDebug("\"" + filename + "\" was already imported - this subsequent import is ignored");
+    // A previously completed import is ignored.
+    if (mImportGraph.active && !mImportGraph.imported.insert(key).second)
         return ImportResult::Ok;
-    }
-
     tinyxml2::XMLDocument doc;
-    {
-        const tinyxml2::XMLError xmlErr = doc.LoadFile(filename.c_str());
-        if (xmlErr != tinyxml2::XML_SUCCESS) {
-            if (xmlErr == tinyxml2::XML_ERROR_FILE_NOT_FOUND ||
-                xmlErr == tinyxml2::XML_ERROR_FILE_COULD_NOT_BE_OPENED ||
-                xmlErr == tinyxml2::XML_ERROR_FILE_READ_ERROR)
-                return ImportResult::NotFound;
-            return ImportResult::NotValid;  // file exists but is malformed XML
-        }
+
+    const tinyxml2::XMLError xmlErr = doc.LoadFile(filename.c_str());
+    if (xmlErr != tinyxml2::XML_SUCCESS) {
+        if (xmlErr == tinyxml2::XML_ERROR_FILE_NOT_FOUND ||
+            xmlErr == tinyxml2::XML_ERROR_FILE_COULD_NOT_BE_OPENED ||
+            xmlErr == tinyxml2::XML_ERROR_FILE_READ_ERROR)
+            return ImportResult::NotFound;
+        return ImportResult::NotValid;  // file exists but is malformed XML
     }
 
     const tinyxml2::XMLElement * const rootnode = doc.FirstChildElement();
@@ -4105,7 +4076,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
         // than being replayed from a separate property-only traversal.
         mImportGraph = ImportGraph();
         mImportGraph.active = true;
-        mImportGraph.replay = false;
         mImportGraph.imported.insert(importFileKey(nfilename));
 
         const ImportResult evaluationResult = importElementChildren(rootnode, projectDir, properties, metadata,
@@ -4312,14 +4282,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
             fs.useMfc = useOfMfcIt != properties.end() && !useOfMfcIt->second.empty() &&
                         caseInsensitiveStringCompare(useOfMfcIt->second, "false") != 0;
 
-            if (charSet == "Unicode") {
+            if (charSet == "Unicode")
                 fs.defines += ";UNICODE=1;_UNICODE=1";
-            } else if (charSet == "MultiByte") {
+            else if (charSet == "MultiByte")
                 fs.defines += ";_MBCS=1";
-                // MultiByte projects use the A (ANSI) Win32 platform, not the W (Wide/Unicode) one.
-                if (fs.platformType == Platform::Type::Win32W)
-                    fs.platformType = Platform::Type::Win32A;
-            }
 
             const auto configurationTypeIt = properties.find("ConfigurationType");
             if (configurationTypeIt != properties.end() &&

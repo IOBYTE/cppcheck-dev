@@ -96,17 +96,11 @@ public:
         NotValid,
     };
 
-    /// Controls which element types are processed during a given evaluation pass.
-    /// The normal Visual Studio path uses EvalPhase::Evaluate, which processes
-    /// elements in document/import order so that properties, item definitions,
-    /// items, and imports take effect where they are encountered. The individual
-    /// phases are retained for callers that need a restricted or legacy traversal.
+    /// The ordered Evaluate model handles both definitions and properties inline.
     enum class EvalPhase : std::uint8_t {
         Properties, ///< Discovery/property-only evaluation
-        ItemDefs,   ///< Legacy item-definition-only pass
-        Items,      ///< Legacy item-only pass
         Evaluate,   ///< Ordered Visual Studio evaluation
-        Discover,   ///< Like Properties but silences debug/error noise from unresolvable imports
+        Discover,   ///< Structural discovery mode; isolates trace diagnostics
     };
 
 protected:
@@ -280,20 +274,13 @@ private:
     static void setSolution(const std::string &filename, PropertiesMap &properties);
     void addDebug(const std::string &msg);
 
-    /// Import bookkeeping for one project-configuration evaluation.
     /// In the ordered Evaluate pass, conditions are evaluated live and the imported
     /// set prevents the same file from being imported more than once.
     struct ImportGraph {
-        /// file key (lower-cased MSBuildThisFileFullPath) -> outcome of each
-        /// <Import>/<ImportGroup> Condition in that file, in document order
-        std::map<std::string, std::vector<bool>> decisions;
-        /// Replay position per file key; used only by the legacy replay traversal.
-        std::map<std::string, std::size_t> cursor;
         /// Files already imported during the current evaluation. An imported file is
         /// processed at most once; a repeated <Import> of it is ignored (MSB4011).
         std::unordered_set<std::string> imported;
         bool active = false;  ///< true only inside importVcxproj's per-configuration loop
-        bool replay = false;  ///< true only for the legacy ItemDefs/Items replay passes
     };
 
     std::string mPath;
