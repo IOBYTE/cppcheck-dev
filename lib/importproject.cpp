@@ -3046,8 +3046,8 @@ void ImportProject::fsSetIncludePaths(FileSettings &fs, const std::string &basep
 }
 
 static void findAndReplaceCaseInsensitive(std::string &s,
-                                         const std::string &search,
-                                         const std::string &replacement)
+                                          const std::string &search,
+                                          const std::string &replacement)
 {
     if (search.empty())
         return;
@@ -3784,13 +3784,13 @@ ImportProject::ImportResult ImportProject::importChoose(const tinyxml2::XMLEleme
 }
 
 ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2::XMLElement *parent,
-    const std::string &baseDir,
-    PropertiesMap &properties,
-    MetadataMap &metadata,
-    std::list<ItemGroupClCompile> &compileList,
-    std::list<ProjectConfiguration> &projectConfigurationList,
-    std::unordered_set<std::string> &importStack,
-    EvalPhase phase) {
+                                                                 const std::string &baseDir,
+                                                                 PropertiesMap &properties,
+                                                                 MetadataMap &metadata,
+                                                                 std::list<ItemGroupClCompile> &compileList,
+                                                                 std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                 std::unordered_set<std::string> &importStack,
+                                                                 EvalPhase phase) {
     ImportResult result = ImportResult::Ok;
 
     for (const tinyxml2::XMLElement *node = parent->FirstChildElement(); node; node = node->NextSiblingElement()) {
@@ -3814,10 +3814,10 @@ ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2:
                     continue;
 
                 const bool alreadyPresent = std::any_of(projectConfigurationList.cbegin(),
-                    projectConfigurationList.cend(),
-                    [&pc](const ProjectConfiguration &existing) {
-                        return existing.name == pc.name;
-                    });
+                                                        projectConfigurationList.cend(),
+                                                        [&pc](const ProjectConfiguration &existing) {
+                    return existing.name == pc.name;
+                });
 
                 if (!alreadyPresent) {
                     projectConfigurationList.emplace_back(pc);
