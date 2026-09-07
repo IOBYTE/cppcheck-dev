@@ -347,12 +347,12 @@ static std::string::size_type findMatchingParen(const std::string &s, std::strin
 
     return std::string::npos;
 }
+
 // Apply an MSBuild property string method (ToLower, Replace, etc.).
 // Used by both the condition evaluator and the property value expander.
 static std::string applyPropertyMethod(std::string value,
                                        const std::string &method,
-                                       const std::vector<std::string> &args)
-{
+                                       const std::vector<std::string> &args) {
     if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
         if (!args.empty())
             throw std::runtime_error("ToUpper takes no arguments");
@@ -521,7 +521,7 @@ static std::string applyPropertyMethod(std::string value,
     throw std::runtime_error("Unhandled method '" + method + "'");
 }
 
-static std::string findFile(const std::string &startDirectory, const std::string &file)
+static std::string findFileAbove(const std::string &startDirectory, const std::string &file)
 {
     // startDirectory comes from MSBuildThisFileDirectory which is already
     // normalized to '/' separators by Path::simplifyPath.
@@ -908,7 +908,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             // Walks up from startingDirectory looking for fileName; returns the
             // containing directory (no trailing separator) or "" if not found.
             if (caseInsensitiveStringCompare(member, "GetDirectoryNameOfFileAbove") == 0) {
-                const std::string found = findFile(args[0], args[1]);
+                const std::string found = findFileAbove(args[0], args[1]);
                 if (found.empty())
                     return "";
                 std::string dir = Path::getPathFromFilename(found);
@@ -920,7 +920,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
             // Walks up from startingDirectory looking for file; returns the full
             // path of the file or "" if not found.
             if (caseInsensitiveStringCompare(member, "GetPathOfFileAbove") == 0)
-                return findFile(args[1], args[0]);
+                return findFileAbove(args[1], args[0]);
         }
 
         // $([MSBuild]::GetPathOfFileAbove(file)) -- 1-arg form.  MSBuild uses the
@@ -935,7 +935,7 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 if (it != properties->end())
                     startDir = it->second;
             }
-            return findFile(startDir, args[0]);
+            return findFileAbove(startDir, args[0]);
         }
 
         // $([MSBuild]::NormalizePath(seg1[, seg2, ...])) -- join segments, normalize
@@ -1737,7 +1737,7 @@ ImportProject::Type ImportProject::import(const std::string &filename, Settings 
         settings ? settings->fileFilters : std::vector<std::string>();
 
     if (endsWith(filename, ".json")) {
-        if (importCompileCommands(fin)) {
+        if (processCompileCommands(fin)) {
             setRelativePaths(filename);
             return ImportProject::Type::COMPILE_DB;
         }
@@ -1773,7 +1773,7 @@ ImportProject::Type ImportProject::import(const std::string &filename, Settings 
     return ImportProject::Type::FAILURE;
 }
 
-bool ImportProject::importCompileCommands(std::istream &istr)
+bool ImportProject::processCompileCommands(std::istream &istr)
 {
     picojson::value compileCommands;
     istr >> compileCommands;
@@ -2670,7 +2670,7 @@ private:
         std::string path = parseValue();
         expect(")");
 
-        // Apply the same normalization used by toAbsolute() / importImport():
+        // Apply the same normalization used by toAbsolute() / processImport():
         // 1. Normalize native separators so classifyPath() and rfind('/') work.
         path = Path::fromNativeSeparators(std::move(path));
         // 2. If any $(Property) survived expansion (unknown property), we cannot
@@ -3591,11 +3591,11 @@ void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
     }
 }
 
-ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElement *node,
-                                                         const std::string &projectDir,
-                                                         const PropertiesMap &properties,
-                                                         const MetadataMap &metadata,
-                                                         std::list<ItemGroupClCompile> &compileList) {
+ImportProject::ImportResult ImportProject::processCompile(const tinyxml2::XMLElement *node,
+                                                          const std::string &projectDir,
+                                                          const PropertiesMap &properties,
+                                                          const MetadataMap &metadata,
+                                                          std::list<ItemGroupClCompile> &compileList) {
     const char *include = node->Attribute("Include");
     if (!include)
         return ImportResult::NotFound;
@@ -3619,72 +3619,68 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
         // by ItemDefinitionGroup; they are frequently referenced in AdditionalOptions,
         // include paths, and PreprocessorDefinitions so they must be present for
         // expandMSBuildVariables() to resolve %(Key) references correctly.
-        {
-            const std::string base = stripDirectoryPart(toInclude);
-            const std::string::size_type dot = base.rfind('.');
-            const std::string ext = dot != std::string::npos ? base.substr(dot) : std::string();
-            const std::string stem = fileStem(base);
+        const std::string base = stripDirectoryPart(toInclude);
+        const std::string::size_type dot = base.rfind('.');
+        const std::string ext = dot != std::string::npos ? base.substr(dot) : std::string();
+        const std::string stem = fileStem(base);
 
-            // Decompose the absolute path into a root prefix and a directory suffix.
-            std::string rootDir;
-            std::size_t afterRoot = 0;
-            if (toInclude.size() >= 2 && toInclude[0] == '/' && toInclude[1] == '/') {
-                // UNC: root is "//server/share/"
-                const std::size_t srv = toInclude.find('/', 2);
-                const std::size_t shr = (srv != std::string::npos) ? toInclude.find('/', srv + 1) : std::string::npos;
-                if (shr != std::string::npos) {
-                    rootDir = toInclude.substr(0, shr + 1);
-                    afterRoot = shr + 1;
-                } else {
-                    rootDir = toInclude;
-                }
-            } else if (toInclude.size() >= 2 &&
-                       std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
-                       toInclude[1] == ':') {
-                if (toInclude.size() > 2 && toInclude[2] == '/') {
-                    // DriveAbsolute: C:/foo.cpp -> RootDir = "C:/"
-                    rootDir = toInclude.substr(0, 2) + "/";
-                    afterRoot = 3;
-                } else {
-                    // DriveRelative: C:foo.cpp has no root directory
-                    afterRoot = 2;
-                }
-            } else if (!toInclude.empty() && toInclude[0] == '/') {
-                rootDir = "/";
-                afterRoot = 1;
+        // Decompose the absolute path into a root prefix and a directory suffix.
+        std::string rootDir;
+        std::size_t afterRoot = 0;
+        if (toInclude.size() >= 2 && toInclude[0] == '/' && toInclude[1] == '/') {
+            // UNC: root is "//server/share/"
+            const std::size_t srv = toInclude.find('/', 2);
+            const std::size_t shr = (srv != std::string::npos) ? toInclude.find('/', srv + 1) : std::string::npos;
+            if (shr != std::string::npos) {
+                rootDir = toInclude.substr(0, shr + 1);
+                afterRoot = shr + 1;
+            } else {
+                rootDir = toInclude;
             }
-            const std::size_t lastSlash = toInclude.rfind('/');
-            const std::string directory = (lastSlash != std::string::npos && lastSlash >= afterRoot)
-                                          ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
-                                          : std::string();
-
-            compile.metadata["Identity"] = Path::fromNativeSeparators(spec.first);
-            compile.metadata["FullPath"] = toInclude;
-            compile.metadata["RootDir"] = rootDir;
-            compile.metadata["Filename"] = stem;
-            compile.metadata["Extension"] = ext;
-            compile.metadata["Directory"] = directory;
-            // %(RecursiveDir) is the portion of the path matched by a ** wildcard.
-            // The importer does not expand glob specs (they are skipped with a
-            // diagnostic above), so this metadata is always empty here.  If wildcard
-            // expansion were ever added, %(RecursiveDir) and %(RelativeDir) would
-            // both need to be derived from the matched filesystem path, not from the
-            // original spec string.
-            compile.metadata["RecursiveDir"] = std::string();
-            // %(RelativeDir) is the directory portion of the item spec as originally
-            // written (after property expansion, before toAbsolute()), normalised to
-            // forward slashes with a trailing separator.  For explicit (non-glob)
-            // includes this matches MSBuild's behaviour; for glob items it would
-            // instead need to be computed from the matched path, but those are never
-            // reached here.
-            {
-                const std::string origNorm = Path::fromNativeSeparators(spec.first);
-                const std::size_t relSlash = origNorm.rfind('/');
-                compile.metadata["RelativeDir"] = (relSlash != std::string::npos)
-                                                  ? origNorm.substr(0, relSlash + 1)
-                                                  : std::string();
+        } else if (toInclude.size() >= 2 &&
+                   std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
+                   toInclude[1] == ':') {
+            if (toInclude.size() > 2 && toInclude[2] == '/') {
+                // DriveAbsolute: C:/foo.cpp -> RootDir = "C:/"
+                rootDir = toInclude.substr(0, 2) + "/";
+                afterRoot = 3;
+            } else {
+                // DriveRelative: C:foo.cpp has no root directory
+                afterRoot = 2;
             }
+        } else if (!toInclude.empty() && toInclude[0] == '/') {
+            rootDir = "/";
+            afterRoot = 1;
         }
+        const std::size_t lastSlash = toInclude.rfind('/');
+        const std::string directory = (lastSlash != std::string::npos && lastSlash >= afterRoot)
+                                      ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
+                                      : std::string();
+
+        compile.metadata["Identity"] = Path::fromNativeSeparators(spec.first);
+        compile.metadata["FullPath"] = toInclude;
+        compile.metadata["RootDir"] = rootDir;
+        compile.metadata["Filename"] = stem;
+        compile.metadata["Extension"] = ext;
+        compile.metadata["Directory"] = directory;
+        // %(RecursiveDir) is the portion of the path matched by a ** wildcard.
+        // The importer does not expand glob specs (they are skipped with a
+        // diagnostic above), so this metadata is always empty here.  If wildcard
+        // expansion were ever added, %(RecursiveDir) and %(RelativeDir) would
+        // both need to be derived from the matched filesystem path, not from the
+        // original spec string.
+        compile.metadata["RecursiveDir"] = std::string();
+        // %(RelativeDir) is the directory portion of the item spec as originally
+        // written (after property expansion, before toAbsolute()), normalised to
+        // forward slashes with a trailing separator.  For explicit (non-glob)
+        // includes this matches MSBuild's behaviour; for glob items it would
+        // instead need to be computed from the matched path, but those are never
+        // reached here.
+        const std::string origNorm = Path::fromNativeSeparators(spec.first);
+        const std::size_t relSlash = origNorm.rfind('/');
+        compile.metadata["RelativeDir"] = (relSlash != std::string::npos)
+                                          ? origNorm.substr(0, relSlash + 1)
+                                          : std::string();
 
         for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement())
             applyClCompileChild(e1, properties, compile.metadata);
@@ -3697,14 +3693,14 @@ ImportProject::ImportResult ImportProject::importCompile(const tinyxml2::XMLElem
     return ImportResult::Ok;
 }
 
-ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElement *node,
-                                                         const std::string &projectDir,
-                                                         PropertiesMap &properties,
-                                                         MetadataMap &metadata,
-                                                         std::list<ItemGroupClCompile> &compileList,
-                                                         std::list<ProjectConfiguration> &projectConfigurationList,
-                                                         std::unordered_set<std::string> &importStack,
-                                                         EvalPhase phase) {
+ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::XMLElement *node,
+                                                                const std::string &projectDir,
+                                                                PropertiesMap &properties,
+                                                                MetadataMap &metadata,
+                                                                std::list<ItemGroupClCompile> &compileList,
+                                                                std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                std::unordered_set<std::string> &importStack,
+                                                                EvalPhase phase) {
     const char *projectAttribute = node->Attribute("Project");
     if (!projectAttribute)
         return ImportResult::Ok;
@@ -3714,8 +3710,8 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     if (phase == EvalPhase::Discover) {
         const auto errSize = errors.size();
         const auto dbgSize = debugs.size();
-        const ImportResult r = importProject(node, projectDir, properties, metadata, compileList,
-                                             projectConfigurationList, importStack, EvalPhase::Properties);
+        const ImportResult r = processImportProject(node, projectDir, properties, metadata, compileList,
+                                                    projectConfigurationList, importStack, EvalPhase::Properties);
         errors.resize(errSize);
         debugs.resize(dbgSize);
         return r;
@@ -3744,7 +3740,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppTargets");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3760,9 +3756,9 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             }
 
             // Emulate key side-effect: Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets.
-            std::string directoryBuildTargets = findFile(projectDir, "Directory.Build.targets");
+            std::string directoryBuildTargets = findFileAbove(projectDir, "Directory.Build.targets");
             if (!directoryBuildTargets.empty()) {
-                ImportResult result = importImport(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3770,7 +3766,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             it = properties.find("ForceImportAfterCppTargets");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3782,7 +3778,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppDefaultProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3793,9 +3789,9 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             // Directory.Build.props is an ordinary import: it is walked in every phase so
             // that its ItemDefinitionGroups and ItemGroups are collected as well, exactly
             // like Directory.Build.targets in the Microsoft.Cpp.targets emulation above.
-            std::string directoryBuildProps = findFile(projectDir, "Directory.Build.props");
+            std::string directoryBuildProps = findFileAbove(projectDir, "Directory.Build.props");
             if (!directoryBuildProps.empty()) {
-                ImportResult result = importImport(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3835,7 +3831,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             it = properties.find("ForceImportAfterCppDefaultProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3850,7 +3846,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             auto it = properties.find("ForceImportBeforeCppProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3879,7 +3875,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             it = properties.find("ForceImportAfterCppProps");
             if (it != properties.end()) {
                 const std::string importFile = it->second;
-                ImportResult result = importImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 if (result > ImportResult::NotResolvable)
                     addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
             }
@@ -3887,7 +3883,7 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
             return ImportResult::Ok;
         }
 
-        ImportResult result = importImport(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+        ImportResult result = processImport(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
         if (result > ImportResult::NotResolvable)
             addDebug("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
         if (result == ImportResult::NotResolvable) {
@@ -3899,18 +3895,18 @@ ImportProject::ImportResult ImportProject::importProject(const tinyxml2::XMLElem
     return ImportResult::Ok;
 }
 
-ImportProject::ImportResult ImportProject::importImportGroup(const tinyxml2::XMLElement *node,
-                                                             const std::string &baseDir,
-                                                             PropertiesMap &properties,
-                                                             MetadataMap &metadata,
-                                                             std::list<ItemGroupClCompile> &compileList,
-                                                             std::list<ProjectConfiguration> &projectConfigurationList,
-                                                             std::unordered_set<std::string> &importStack,
-                                                             EvalPhase phase) {
+ImportProject::ImportResult ImportProject::processImportGroup(const tinyxml2::XMLElement *node,
+                                                              const std::string &baseDir,
+                                                              PropertiesMap &properties,
+                                                              MetadataMap &metadata,
+                                                              std::list<ItemGroupClCompile> &compileList,
+                                                              std::list<ProjectConfiguration> &projectConfigurationList,
+                                                              std::unordered_set<std::string> &importStack,
+                                                              EvalPhase phase) {
     ImportResult ret = ImportResult::Ok;
     for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
         if (importTaken(e, "Import", "Project", properties)) {
-            const ImportResult result = importProject(e, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            const ImportResult result = processImportProject(e, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             if (result > ImportResult::NotResolvable) {
                 if (phase != EvalPhase::Discover) {
                     const char *proj = e->Attribute("Project");
@@ -3923,44 +3919,14 @@ ImportProject::ImportResult ImportProject::importImportGroup(const tinyxml2::XML
     return ret;
 }
 
-ImportProject::ImportResult ImportProject::importChoose(const tinyxml2::XMLElement *node,
-                                                        const std::string &baseDir,
-                                                        PropertiesMap &properties,
-                                                        MetadataMap &metadata,
-                                                        std::list<ItemGroupClCompile> &compileList,
-                                                        std::list<ProjectConfiguration> &projectConfigurationList,
-                                                        std::unordered_set<std::string> &importStack,
-                                                        EvalPhase phase) {
-    const tinyxml2::XMLElement *selected = nullptr;
-    const tinyxml2::XMLElement *otherwise = nullptr;
-
-    for (const tinyxml2::XMLElement *branch = node->FirstChildElement(); branch; branch = branch->NextSiblingElement()) {
-        const char *name = branch->Name();
-
-        if (std::strcmp(name, "When") == 0) {
-            if (!selected && conditionIsTrue(branch, properties))
-                selected = branch;
-        } else if (std::strcmp(name, "Otherwise") == 0)
-            otherwise = branch;
-    }
-
-    if (!selected)
-        selected = otherwise;
-
-    if (!selected)
-        return ImportResult::Ok;
-
-    return importElementChildren(selected, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-}
-
-ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2::XMLElement *parent,
-                                                                 const std::string &baseDir,
-                                                                 PropertiesMap &properties,
-                                                                 MetadataMap &metadata,
-                                                                 std::list<ItemGroupClCompile> &compileList,
-                                                                 std::list<ProjectConfiguration> &projectConfigurationList,
-                                                                 std::unordered_set<std::string> &importStack,
-                                                                 EvalPhase phase) {
+ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2::XMLElement *parent,
+                                                                  const std::string &baseDir,
+                                                                  PropertiesMap &properties,
+                                                                  MetadataMap &metadata,
+                                                                  std::list<ItemGroupClCompile> &compileList,
+                                                                  std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                  std::unordered_set<std::string> &importStack,
+                                                                  EvalPhase phase) {
     ImportResult result = ImportResult::Ok;
 
     for (const tinyxml2::XMLElement *node = parent->FirstChildElement(); node; node = node->NextSiblingElement()) {
@@ -4002,7 +3968,7 @@ ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2:
                         continue;
 
                     if (item->Attribute("Include"))
-                        importCompile(item, baseDir, properties, metadata, compileList);
+                        processCompile(item, baseDir, properties, metadata, compileList);
                     else if (item->Attribute("Update"))
                         applyClCompileUpdate(item, baseDir, properties, compileList);
                     else if (item->Attribute("Remove"))
@@ -4010,27 +3976,24 @@ ImportProject::ImportResult ImportProject::importElementChildren(const tinyxml2:
                 }
             }
         } else if (hasName(node, "ImportGroup", properties)) {
-            const ImportResult importResult = importImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            const ImportResult importResult = processImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             result = std::max(result, importResult);
         } else if (importTaken(node, "Import", "Project", properties)) {
-            const ImportResult importResult = importProject(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            const ImportResult importResult = processImportProject(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             result = std::max(result, importResult);
-        } else if (hasName(node, "Choose", properties)) {
-            const ImportResult chooseResult = importChoose(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-            result = std::max(result, chooseResult);
         }
     }
 
     return result;
 }
 
-ImportProject::ImportResult ImportProject::importImport(const std::string &file,
-                                                        PropertiesMap &properties,
-                                                        MetadataMap &metadata,
-                                                        std::list<ItemGroupClCompile> &compileList,
-                                                        std::list<ProjectConfiguration> &projectConfigurationList,
-                                                        std::unordered_set<std::string> &importStack,
-                                                        EvalPhase phase) {
+ImportProject::ImportResult ImportProject::processImport(const std::string &file,
+                                                         PropertiesMap &properties,
+                                                         MetadataMap &metadata,
+                                                         std::list<ItemGroupClCompile> &compileList,
+                                                         std::list<ProjectConfiguration> &projectConfigurationList,
+                                                         std::unordered_set<std::string> &importStack,
+                                                         EvalPhase phase) {
     std::string filename(file);
     // file can't be resolved
     if (!simplifyPathWithVariables(filename, properties))
@@ -4071,8 +4034,8 @@ ImportProject::ImportResult ImportProject::importImport(const std::string &file,
     MSBuildThis msBuildThis(filename, properties);
     std::string propsDir = Path::getPathFromFilename(filename);
 
-    return importElementChildren(rootnode, propsDir, properties, metadata, compileList,
-                                 projectConfigurationList, importStack, phase);
+    return processElementChildren(rootnode, propsDir, properties, metadata, compileList,
+                                  projectConfigurationList, importStack, phase);
 }
 
 bool ImportProject::importVcxproj(const std::string &filename,
@@ -4176,7 +4139,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
     }
 
     // Discovery pass: if no ProjectConfigurations were found inline in the vcxproj, walk
-    // its <Import>/<ImportGroup> nodes through importProject so that every MSBuild import
+    // its <Import>/<ImportGroup> nodes through processImportProject so that every MSBuild import
     // mechanism (Directory.Build.props, ForceImportBeforeCppProps, etc.) is honoured
     // generically -- no special-casing of individual property names required.
     // We also process <PropertyGroup> nodes so that properties needed to resolve import
@@ -4217,10 +4180,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
             } else if (hasName(node, "ImportGroup", discoverProps)) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e && projectConfigurationList.empty(); e = e->NextSiblingElement()) {
                     if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
-                        importProject(e, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
+                        processImportProject(e, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
                 }
             } else if (hasNameAndAttribute(node, "Import", "Project", discoverProps)) {
-                importProject(node, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
+                processImportProject(node, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
             }
         }
     }
@@ -4254,9 +4217,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
         mImportGraph.active = true;
         mImportGraph.imported.insert(importFileKey(nfilename));
 
-        const ImportResult evaluationResult = importElementChildren(rootnode, projectDir, properties, metadata,
-                                                                    compileList, projectConfigurationList, importStack,
-                                                                    EvalPhase::Evaluate);
+        const ImportResult evaluationResult = processElementChildren(rootnode, projectDir, properties, metadata,
+                                                                     compileList, projectConfigurationList, importStack,
+                                                                     EvalPhase::Evaluate);
         if (evaluationResult > ImportResult::NotResolvable)
             addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(evaluationResult));
 

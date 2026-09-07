@@ -35,7 +35,7 @@
 
 class TestImporter final : public ImportProject {
 public:
-    using ImportProject::importCompileCommands;
+    using ImportProject::processCompileCommands;
     using ImportProject::importCppcheckGuiProject;
     using ImportProject::collectArgs;
     using ImportProject::fsSetDefines;
@@ -57,26 +57,26 @@ private:
         TEST_CASE(setIncludePaths2);
         TEST_CASE(setIncludePaths3); // macro names are case insensitive
         TEST_CASE(setRelativePathsInclude); // #14746
-        TEST_CASE(importCompileCommands1);
-        TEST_CASE(importCompileCommands2); // #8563, #9567
-        TEST_CASE(importCompileCommands3); // check with existing trailing / in directory
-        TEST_CASE(importCompileCommands4); // only accept certain file types
-        TEST_CASE(importCompileCommands5); // Windows/CMake/Ninja generated compile_commands.json
-        TEST_CASE(importCompileCommands6); // Windows/CMake/Ninja generated compile_commands.json with spaces
-        TEST_CASE(importCompileCommands7); // linux: "/home/danielm/cppcheck 2"
-        TEST_CASE(importCompileCommands8); // Windows: "C:\Users\danielm\cppcheck"
-        TEST_CASE(importCompileCommands9);
-        TEST_CASE(importCompileCommands10); // #10887: include path with space
-        TEST_CASE(importCompileCommands11); // include path order
-        TEST_CASE(importCompileCommands12); // #13040: "directory" is parent directory, relative include paths
-        TEST_CASE(importCompileCommands13); // #13333: duplicate file entries
-        TEST_CASE(importCompileCommands14); // #14156
-        TEST_CASE(importCompileCommands15); // #14306
-        TEST_CASE(importCompileCommandsForcedInclude); // -include / /FI force-include
-        TEST_CASE(importCompileCommandsArgumentsSection); // Handle arguments section
-        TEST_CASE(importCompileCommandsNoCommandSection); // gracefully handles malformed json
-        TEST_CASE(importCompileCommandsDirectoryMissing); // 'directory' field missing
-        TEST_CASE(importCompileCommandsDirectoryInvalid); // 'directory' field not a string
+        TEST_CASE(processCompileCommands1);
+        TEST_CASE(processCompileCommands2); // #8563, #9567
+        TEST_CASE(processCompileCommands3); // check with existing trailing / in directory
+        TEST_CASE(processCompileCommands4); // only accept certain file types
+        TEST_CASE(processCompileCommands5); // Windows/CMake/Ninja generated compile_commands.json
+        TEST_CASE(processCompileCommands6); // Windows/CMake/Ninja generated compile_commands.json with spaces
+        TEST_CASE(processCompileCommands7); // linux: "/home/danielm/cppcheck 2"
+        TEST_CASE(processCompileCommands8); // Windows: "C:\Users\danielm\cppcheck"
+        TEST_CASE(processCompileCommands9);
+        TEST_CASE(processCompileCommands10); // #10887: include path with space
+        TEST_CASE(processCompileCommands11); // include path order
+        TEST_CASE(processCompileCommands12); // #13040: "directory" is parent directory, relative include paths
+        TEST_CASE(processCompileCommands13); // #13333: duplicate file entries
+        TEST_CASE(processCompileCommands14); // #14156
+        TEST_CASE(processCompileCommands15); // #14306
+        TEST_CASE(processCompileCommandsForcedInclude); // -include / /FI force-include
+        TEST_CASE(processCompileCommandsArgumentsSection); // Handle arguments section
+        TEST_CASE(processCompileCommandsNoCommandSection); // gracefully handles malformed json
+        TEST_CASE(processCompileCommandsDirectoryMissing); // 'directory' field missing
+        TEST_CASE(processCompileCommandsDirectoryInvalid); // 'directory' field not a string
         TEST_CASE(importCppcheckGuiProject);
         TEST_CASE(importCppcheckGuiProjectDuplicateSuppressions);
         TEST_CASE(importCppcheckGuiProjectPremiumMisra);
@@ -171,7 +171,7 @@ private:
         ASSERT_EQUALS("sub/a.c", fs.filename());
     }
 
-    void importCompileCommands1() const {
+    void processCompileCommands1() const {
         REDIRECT;
         constexpr char json[] = R"([{
                                    "directory": "/tmp",
@@ -180,12 +180,12 @@ private:
                                    }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("TEST1=1;TEST2=2", importer.fileSettings.cbegin()->defines);
     }
 
-    void importCompileCommands2() const {
+    void processCompileCommands2() const {
         REDIRECT;
         // Absolute file path
 #ifdef _WIN32
@@ -196,7 +196,7 @@ private:
                                }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("C:/bar.c", importer.fileSettings.cbegin()->filename());
 #else
@@ -207,13 +207,13 @@ private:
                                    }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("/bar.c", importer.fileSettings.cbegin()->filename());
 #endif
     }
 
-    void importCompileCommands3() const {
+    void processCompileCommands3() const {
         REDIRECT;
         const char json[] = R"([{
                                     "directory": "/tmp/",
@@ -222,12 +222,12 @@ private:
                                }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("/tmp/src.c", importer.fileSettings.cbegin()->filename());
     }
 
-    void importCompileCommands4() const {
+    void processCompileCommands4() const {
         REDIRECT;
         constexpr char json[] = R"([{
                                     "directory": "/tmp/",
@@ -236,11 +236,11 @@ private:
                                    }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(0, importer.fileSettings.size());
     }
 
-    void importCompileCommands5() const {
+    void processCompileCommands5() const {
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -255,12 +255,12 @@ private:
              }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(2, importer.fileSettings.size());
         ASSERT_EQUALS("C:/Users/dan/git/test-cppcheck/mylib/src/", importer.fileSettings.cbegin()->includePaths.front());
     }
 
-    void importCompileCommands6() const {
+    void processCompileCommands6() const {
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -275,14 +275,14 @@ private:
              }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(2, importer.fileSettings.size());
         ASSERT_EQUALS("C:/Users/dan/git/test-cppcheck/mylib/src/", importer.fileSettings.cbegin()->includePaths.front());
         ASSERT_EQUALS("C:/Users/dan/git/test-cppcheck/mylib/second src/", importer.fileSettings.cbegin()->includePaths.back());
     }
 
 
-    void importCompileCommands7() const {
+    void processCompileCommands7() const {
         REDIRECT;
         // cmake -DFILESDIR="/some/path" ..
         constexpr char json[] =
@@ -293,7 +293,7 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("FILESDIR=\"/some/path\"", importer.fileSettings.cbegin()->defines);
         ASSERT_EQUALS(1, importer.fileSettings.cbegin()->includePaths.size());
@@ -303,7 +303,7 @@ private:
                            importer.fileSettings.cbegin()->includePaths.back());
     }
 
-    void importCompileCommands8() const {
+    void processCompileCommands8() const {
         REDIRECT;
         // cmake -DFILESDIR="C:\Program Files\Cppcheck" -G"NMake Makefiles" ..
         constexpr char json[] =
@@ -314,10 +314,10 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr)); // Do not crash
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr)); // Do not crash
     }
 
-    void importCompileCommands9() const {
+    void processCompileCommands9() const {
         REDIRECT;
         // IAR output (https://sourceforge.net/p/cppcheck/discussion/general/thread/608af51e0a/)
         constexpr char json[] =
@@ -331,10 +331,10 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
     }
 
-    void importCompileCommands10() const { // #10887
+    void processCompileCommands10() const { // #10887
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -348,13 +348,13 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS("/home/danielm/cppcheck/test folder/", fs.includePaths.front());
     }
 
-    void importCompileCommands11() const { // include path order
+    void processCompileCommands11() const { // include path order
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -370,14 +370,14 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS("/x/def/", fs.includePaths.front());
         ASSERT_EQUALS("/x/abc/", fs.includePaths.back());
     }
 
-    void importCompileCommands12() const { // #13040
+    void processCompileCommands12() const { // #13040
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -387,14 +387,14 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS(1, fs.includePaths.size());
         ASSERT_EQUALS("/x/", fs.includePaths.front());
     }
 
-    void importCompileCommands13() const { // #13333
+    void processCompileCommands13() const { // #13333
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -408,7 +408,7 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(2, importer.fileSettings.size());
         const FileSettings &fs1 = importer.fileSettings.front();
         const FileSettings &fs2 = importer.fileSettings.back();
@@ -416,7 +416,7 @@ private:
         ASSERT_EQUALS(1, fs2.file.fsFileId());
     }
 
-    void importCompileCommands14() const { // #14156
+    void processCompileCommands14() const { // #14156
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -433,13 +433,13 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS("TFS_LINUX_MODULE_NAME=\"tfs_linux\"", fs.defines);
     }
 
-    void importCompileCommands15() const { // #14306
+    void processCompileCommands15() const { // #14306
         REDIRECT;
         constexpr char json[] =
             R"([
@@ -452,14 +452,14 @@ private:
                ])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS(1, fs.includePaths.size());
         ASSERT_EQUALS("C:/Users/abcd/efg/hijk/path/123/", fs.includePaths.front());
     }
 
-    void importCompileCommandsForcedInclude() const { // -include / /FI force-include
+    void processCompileCommandsForcedInclude() const { // -include / /FI force-include
         REDIRECT;
         constexpr char json[] =
             R"([{
@@ -469,7 +469,7 @@ private:
             }])";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         const FileSettings &fs = importer.fileSettings.front();
         ASSERT_EQUALS(2, fs.forcedIncludes.size());
@@ -477,48 +477,48 @@ private:
         ASSERT_EQUALS("platform.h", fs.forcedIncludes.back()); // MSVC/clang-cl /FI
     }
 
-    void importCompileCommandsArgumentsSection() const {
+    void processCompileCommandsArgumentsSection() const {
         REDIRECT;
         constexpr char json[] = "[ { \"directory\": \"/tmp/\","
                                 "\"arguments\": [\"gcc\", \"-c\", \"src.c\"],"
                                 "\"file\": \"src.c\" } ]";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(true, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(true, importer.processCompileCommands(istr));
         ASSERT_EQUALS(1, importer.fileSettings.size());
         ASSERT_EQUALS("/tmp/src.c", importer.fileSettings.cbegin()->filename());
     }
 
-    void importCompileCommandsNoCommandSection() const {
+    void processCompileCommandsNoCommandSection() const {
         REDIRECT;
         constexpr char json[] = "[ { \"directory\": \"/tmp/\","
                                 "\"file\": \"src.mm\" } ]";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(false, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(false, importer.processCompileCommands(istr));
         ASSERT_EQUALS(0, importer.fileSettings.size());
         ASSERT_EQUALS(1, importer.errors.size());
         ASSERT_EQUALS("no 'arguments' or 'command' field found in compilation database entry", importer.errors[0]);
     }
 
-    void importCompileCommandsDirectoryMissing() const {
+    void processCompileCommandsDirectoryMissing() const {
         REDIRECT;
         constexpr char json[] = "[ { \"file\": \"src.mm\" } ]";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(false, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(false, importer.processCompileCommands(istr));
         ASSERT_EQUALS(0, importer.fileSettings.size());
         ASSERT_EQUALS(1, importer.errors.size());
         ASSERT_EQUALS("'directory' field in compilation database entry missing", importer.errors[0]);
     }
 
-    void importCompileCommandsDirectoryInvalid() const {
+    void processCompileCommandsDirectoryInvalid() const {
         REDIRECT;
         constexpr char json[] = "[ { \"directory\": 123,"
                                 "\"file\": \"src.mm\" } ]";
         std::istringstream istr(json);
         TestImporter importer;
-        ASSERT_EQUALS(false, importer.importCompileCommands(istr));
+        ASSERT_EQUALS(false, importer.processCompileCommands(istr));
         ASSERT_EQUALS(0, importer.fileSettings.size());
         ASSERT_EQUALS(1, importer.errors.size());
         ASSERT_EQUALS("'directory' field in compilation database entry is not a string", importer.errors[0]);

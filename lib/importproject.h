@@ -147,7 +147,7 @@ public:
     static const std::string &importResultStr(ImportResult result);
 
 protected:
-    bool importCompileCommands(std::istream &istr);
+    bool processCompileCommands(std::istream &istr);
     bool importCppcheckGuiProject(std::istream &istr, Settings &settings, Suppressions &supprs);
     static std::string collectArgs(const std::string &cmd, std::vector<std::string> &args);
     void setRelativePaths(const std::string &filename);
@@ -184,50 +184,42 @@ private:
     bool importSlnx(const std::string& filename, const std::vector<std::string>& fileFilters);
     bool importVcxproj(const std::string &filename, PropertiesMap &properties, const std::vector<std::string> &fileFilters);
 
-    ImportResult importImport(const std::string &file,
-                              PropertiesMap &properties,
-                              MetadataMap &metadata,
-                              std::list<ItemGroupClCompile> &compileList,
-                              std::list<ProjectConfiguration> &projectConfigurationList,
-                              std::unordered_set<std::string> &importStack,
-                              EvalPhase phase);
-    ImportResult importProject(const tinyxml2::XMLElement *node,
-                               const std::string &projectDir,
+    ImportResult processImport(const std::string &file,
                                PropertiesMap &properties,
                                MetadataMap &metadata,
                                std::list<ItemGroupClCompile> &compileList,
                                std::list<ProjectConfiguration> &projectConfigurationList,
                                std::unordered_set<std::string> &importStack,
                                EvalPhase phase);
-    ImportResult importImportGroup(const tinyxml2::XMLElement *node,
-                                   const std::string &baseDir,
-                                   PropertiesMap &properties,
-                                   MetadataMap &metadata,
-                                   std::list<ItemGroupClCompile> &compileList,
-                                   std::list<ProjectConfiguration> &projectConfigurationList,
-                                   std::unordered_set<std::string> &importStack,
-                                   EvalPhase phase);
-    ImportResult importCompile(const tinyxml2::XMLElement *node,
-                               const std::string &projectDir,
-                               const PropertiesMap &properties,
-                               const MetadataMap &metadata,
-                               std::list<ItemGroupClCompile> &compileList);
-    ImportResult importChoose(const tinyxml2::XMLElement *node,
-                              const std::string &baseDir,
-                              PropertiesMap &properties,
-                              MetadataMap &metadata,
-                              std::list<ItemGroupClCompile> &compileList,
-                              std::list<ProjectConfiguration> &projectConfigurationList,
-                              std::unordered_set<std::string> &importStack,
-                              EvalPhase phase);
-    ImportResult importElementChildren(const tinyxml2::XMLElement *parent,
-                                       const std::string &baseDir,
-                                       PropertiesMap &properties,
-                                       MetadataMap &metadata,
-                                       std::list<ItemGroupClCompile> &compileList,
-                                       std::list<ProjectConfiguration> &projectConfigurationList,
-                                       std::unordered_set<std::string> &importStack,
-                                       EvalPhase phase);
+    ImportResult processImportProject(const tinyxml2::XMLElement *node,
+                                      const std::string &projectDir,
+                                      PropertiesMap &properties,
+                                      MetadataMap &metadata,
+                                      std::list<ItemGroupClCompile> &compileList,
+                                      std::list<ProjectConfiguration> &projectConfigurationList,
+                                      std::unordered_set<std::string> &importStack,
+                                      EvalPhase phase);
+    ImportResult processImportGroup(const tinyxml2::XMLElement *node,
+                                    const std::string &baseDir,
+                                    PropertiesMap &properties,
+                                    MetadataMap &metadata,
+                                    std::list<ItemGroupClCompile> &compileList,
+                                    std::list<ProjectConfiguration> &projectConfigurationList,
+                                    std::unordered_set<std::string> &importStack,
+                                    EvalPhase phase);
+    ImportResult processCompile(const tinyxml2::XMLElement *node,
+                                const std::string &projectDir,
+                                const PropertiesMap &properties,
+                                const MetadataMap &metadata,
+                                std::list<ItemGroupClCompile> &compileList);
+    ImportResult processElementChildren(const tinyxml2::XMLElement *parent,
+                                        const std::string &baseDir,
+                                        PropertiesMap &properties,
+                                        MetadataMap &metadata,
+                                        std::list<ItemGroupClCompile> &compileList,
+                                        std::list<ProjectConfiguration> &projectConfigurationList,
+                                        std::unordered_set<std::string> &importStack,
+                                        EvalPhase phase);
     void applyClCompileUpdate(const tinyxml2::XMLElement *node,
                               const std::string &baseDir,
                               const PropertiesMap &properties,
@@ -238,7 +230,7 @@ private:
                               std::list<ItemGroupClCompile> &compileList);
     // Returns (original-segment, absolute-path) pairs.  The original segment is
     // the spec after property expansion but before toAbsolute(), preserving the
-    // relative form needed to compute %(RelativeDir) in importCompile().
+    // relative form needed to compute %(RelativeDir) in processCompile().
     std::vector<std::pair<std::string, std::string>> expandItemSpec(const std::string &spec,
                                                                     const std::string &projectDir,
                                                                     const PropertiesMap &properties);
