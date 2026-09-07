@@ -262,7 +262,7 @@ private:
     void addMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, MetadataMap &metadata);
     std::string getMetadata(const tinyxml2::XMLElement *node, const PropertiesMap &properties, const MetadataMap &metadata, const std::string &original);
     std::string toAbsolute(const std::string &filename, const std::string &baseDir, const PropertiesMap &properties);
-    std::string toAbsoluteExpanded(const std::string &filename, const std::string &baseDir);
+    static std::string toAbsoluteExpanded(const std::string &filename, const std::string &baseDir);
     static std::string toAbsolute(const std::string &path);
     static void setSolution(const std::string &filename, PropertiesMap &properties);
     void addDebug(const std::string &msg);
