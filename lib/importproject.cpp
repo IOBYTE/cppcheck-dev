@@ -312,21 +312,41 @@ void ImportProject::addDebug(const std::string &msg) {
 // inside static-function argument lists (e.g. Pow(2,3), Format(...)) must
 // also open and close a nesting level, otherwise the inner ')' would be
 // mistaken for the match of the outer one.
-static std::string::size_type findMatchingParen(const std::string &s, std::string::size_type parenPos)
-{
+static std::string::size_type findMatchingParen(const std::string &s, std::string::size_type parenPos) {
+    if (parenPos >= s.size() || s[parenPos] != '(')
+        return std::string::npos;
+
     int depth = 0;
+    char quote = '\0';
+
     for (std::string::size_type i = parenPos; i < s.size(); ++i) {
-        if (s[i] == '(')
+        const char c = s[i];
+
+        if (quote != '\0') {
+            if (c == quote) {
+                // A doubled quote represents a literal quote.
+                if (i + 1 < s.size() && s[i + 1] == quote) {
+                    ++i;
+                    continue;
+                }
+                quote = '\0';
+            }
+            continue;
+        }
+
+        if (c == '\'' || c == '"') {
+            quote = c;
+        } else if (c == '(') {
             ++depth;
-        else if (s[i] == ')') {
+        } else if (c == ')') {
             --depth;
             if (depth == 0)
                 return i;
         }
     }
+
     return std::string::npos;
 }
-
 // Apply an MSBuild property string method (ToLower, Replace, etc.).
 // Used by both the condition evaluator and the property value expander.
 static std::string applyPropertyMethod(std::string value,
@@ -336,14 +356,14 @@ static std::string applyPropertyMethod(std::string value,
     if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
         if (!args.empty())
             throw std::runtime_error("ToUpper takes no arguments");
-        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int(*)(int)>(std::toupper));
+        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int (*)(int)>(std::toupper));
         return value;
     }
 
     if (caseInsensitiveStringCompare(method, "ToLower") == 0) {
         if (!args.empty())
             throw std::runtime_error("ToLower takes no arguments");
-        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int(*)(int)>(std::tolower));
+        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int (*)(int)>(std::tolower));
         return value;
     }
 
@@ -946,6 +966,11 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                     return "";
                 }
             }
+            const PathKind resultKind = classifyPath(result);
+            if (resultKind == PathKind::DriveRelative) {
+                addDebug("NormalizePath: drive-relative path cannot be resolved: " + result);
+                return "";
+            }
             // Delegate separator normalization and . / .. resolution to the
             // central Path utilities so all path handling stays consistent.
             return Path::simplifyPath(Path::fromNativeSeparators(result));
@@ -1095,8 +1120,13 @@ std::string ImportProject::applyMSBuildStaticFunction(const std::string &classNa
                 return Path::getFilenameExtension(filename);
             if (caseInsensitiveStringCompare(member, "IsPathRooted") == 0)
                 return isPathRooted(filename) ? "True" : "False";
-            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0)
+            if (caseInsensitiveStringCompare(member, "GetFullPath") == 0) {
+                if (classifyPath(filename) == PathKind::DriveRelative) {
+                    addDebug("GetFullPath: drive-relative path cannot be resolved: " + filename);
+                    return "";
+                }
                 return toAbsolute(filename);
+            }
         }
         if (!args.empty() && caseInsensitiveStringCompare(member, "Combine") == 0) {
             std::string result = args[0];
@@ -2964,6 +2994,19 @@ namespace {
     };
 }
 
+std::string ImportProject::toAbsoluteExpanded(const std::string &filename, const std::string &baseDir)
+{
+    if (filename.empty())
+        return filename;
+
+    const std::string normalized = Path::simplifyPath(filename);
+
+    if (Path::isAbsolute(normalized))
+        return normalized;
+
+    return Path::simplifyPath(Path::join(baseDir, normalized));
+}
+
 std::string ImportProject::toAbsolute(const std::string &path)
 {
     std::string internal(Path::fromNativeSeparators(path));
@@ -3305,15 +3348,6 @@ void ImportProject::applyClCompileChild(const tinyxml2::XMLElement *e1,
     if (!eName || !conditionIsTrue(e1, properties))
         return;
 
-    if (std::strcmp(eName, "ExcludedFromBuild") == 0) {
-        const char *text = e1->GetText();
-        std::string val(text ? text : "");
-        trimWhitespace(val);
-        expandMSBuildVariables(val, properties);
-        metadata["ExcludedFromBuild"] = std::move(val);
-        return;
-    }
-
     // Visual Studio permits any item metadata to be overridden at item level.
     // Keep the same metadata expansion and inheritance behavior used by
     // ItemDefinitionGroup processing.
@@ -3369,7 +3403,7 @@ static void applyAdditionalOptions(MetadataMap &metadata)
                                        option.compare(0, 6, "/debug") != 0 && option.compare(0, 6, "-debug") != 0 &&
                                        option.compare(0, 12, "/dynamicbase") != 0 && option.compare(0, 12, "-dynamicbase") != 0 &&
                                        option.compare(0, 6, "/delay") != 0 && option.compare(0, 6, "-delay") != 0 &&
-                                       option.compare(0, 4, "/doc") == 0 && option.compare(0, 4, "-doc") == 0)) {
+                                       option.compare(0, 4, "/doc") != 0 && option.compare(0, 4, "-doc") != 0)) {
 
                 std::string define;
                 if (option.size() == 2) {
@@ -3491,7 +3525,7 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
             if (decoded.find('*') != std::string::npos || decoded.find('?') != std::string::npos) {
                 addDebug("ClCompile item glob not supported, skipped: '" + decoded + "'");
             } else {
-                result.emplace_back(decoded, toAbsolute(decoded, projectDir, properties));
+                result.emplace_back(decoded, toAbsoluteExpanded(decoded, projectDir));
             }
         }
     }
