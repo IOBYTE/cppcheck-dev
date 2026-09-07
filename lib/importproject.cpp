@@ -336,18 +336,14 @@ static std::string applyPropertyMethod(std::string value,
     if (caseInsensitiveStringCompare(method, "ToUpper") == 0) {
         if (!args.empty())
             throw std::runtime_error("ToUpper takes no arguments");
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-            return std::toupper(c);
-        });
+        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int(*)(int)>(std::toupper));
         return value;
     }
 
     if (caseInsensitiveStringCompare(method, "ToLower") == 0) {
         if (!args.empty())
             throw std::runtime_error("ToLower takes no arguments");
-        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-            return std::tolower(c);
-        });
+        std::transform(value.cbegin(), value.cend(), value.begin(), static_cast<int(*)(int)>(std::tolower));
         return value;
     }
 
@@ -538,26 +534,30 @@ enum class PathKind : std::uint8_t {
     Relative,      ///< foo  (everything else)
 };
 
-static PathKind classifyPath(const std::string &s)
+static PathKind classifyPath(const std::string &path)
 {
-    if (s.empty())
+    if (path.empty())
         return PathKind::Empty;
     // UNC: two leading separators.
-    if ((s[0] == '/' || s[0] == '\\') &&
-        s.size() >= 2 && (s[1] == '/' || s[1] == '\\'))
+    if ((path[0] == '/' || path[0] == '\\') &&
+        path.size() >= 2 && (path[1] == '/' || path[1] == '\\'))
         return PathKind::UNC;
     // Windows drive letter.
-    if (s.size() >= 2 &&
-        std::isalpha(static_cast<unsigned char>(s[0])) &&
-        s[1] == ':') {
-        if (s.size() >= 3 && (s[2] == '/' || s[2] == '\\'))
+    if (path.size() >= 2 &&
+        std::isalpha(static_cast<unsigned char>(path[0])) &&
+        path[1] == ':') {
+        if (path.size() >= 3 && (path[2] == '/' || path[2] == '\\'))
             return PathKind::DriveAbsolute;
         return PathKind::DriveRelative;
     }
     // Single leading separator.
-    if (s[0] == '/' || s[0] == '\\')
+    if (path[0] == '/' || path[0] == '\\')
         return PathKind::RootRelative;
     return PathKind::Relative;
+}
+
+static bool isRelative(const std::string &path) {
+    return classifyPath(path) >= PathKind::DriveRelative;
 }
 
 // Append one path segment to `result` using Windows path-combination semantics.
@@ -4519,34 +4519,41 @@ bool ImportProject::importVcxproj(const std::string &filename,
             fs.forcedIncludes.clear();
 
             for (const std::string &forcedInclude : toStringList(compile.get("ForcedIncludeFiles"))) {
+                if (forcedInclude.empty())
+                    continue;
+
+                // Standardize native backslashes to uniform forward slashes
                 const std::string normalized = Path::fromNativeSeparators(forcedInclude);
+                const bool relative = isRelative(normalized);
+                std::string resolved;
 
-                // Absolute and root-relative paths do not use the include search path.
-                const bool isRelative =
-                    !normalized.empty() &&
-                    normalized[0] != '/' &&
-                    !(normalized.size() > 1 && normalized[1] == ':');
+                if (!relative) {
+                    // Step 2a: For absolute paths, clean up dot notation and simplify structures
+                    resolved = normalized;
+                    simplifyPathWithVariables(resolved, properties);
+                } else {
+                    // Relative paths - Search prioritized include paths FIRST (Visual Studio Priority)
+                    bool matchFound = false;
+                    bool isDir = false;
 
-                std::string resolved = toAbsolute(forcedInclude, projectDir, properties);
+                    for (const std::string &includePath : fs.includePaths) {
+                        std::string candidate = toAbsolute(normalized, includePath, properties);
 
-                if (isRelative) {
-                    // Visual Studio searches relative forced includes from the project
-                    // directory before AdditionalIncludeDirectories.
-                    if (!std::ifstream(resolved).good()) {
-                        for (const std::string &includePath : fs.includePaths) {
-                            const std::string candidate =
-                                toAbsolute(forcedInclude, includePath, properties);
-
-                            if (std::ifstream(candidate).good()) {
-                                resolved = candidate;
-                                break;
-                            }
+                        // Pass the address of isDir to explicitly verify the path is a FILE, never a directory
+                        if (Path::exists(candidate, &isDir) && !isDir) {
+                            resolved = std::move(candidate);
+                            matchFound = true;
+                            break;
                         }
+                    }
+
+                    // Step 3: Fall back to checking the Project Root Folder only if no include paths matched
+                    if (!matchFound) {
+                        resolved = toAbsolute(normalized, projectDir, properties);
                     }
                 }
 
-                // Preserve the project-relative absolute path if no candidate exists so
-                // the existing missing-file diagnostics remain possible.
+                // Append the safely validated and prioritized file path
                 fs.forcedIncludes.push_back(std::move(resolved));
             }
 
