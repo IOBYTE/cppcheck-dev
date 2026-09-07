@@ -3475,19 +3475,19 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     }
 }
 
-std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(const std::string &spec,
-                                                                               const std::string &projectDir,
-                                                                               const PropertiesMap &properties) {
-    std::vector<std::pair<std::string, std::string>> result;
+std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::string &spec,
+                                                                  const std::string &projectDir,
+                                                                  const PropertiesMap &properties)
+{
     if (spec.empty())
-        return result;
+        return std::make_pair(std::string(), std::string());
 
     // Phase 1: Expand outer macros (Visual Studio handles this for static layout hooks)
     std::string expandedSpec = spec;
     expandMSBuildVariables(expandedSpec, properties);
 
     // Phase 2: Treat the ENTIRE expanded string as a single literal path.
-    // Visual Studio IDE does NOT split 'Include' attributes by semicolons.
+    // Visual Studio IDE does NOT split 'Include', 'Update', or 'Remove' attributes by semicolons.
     std::size_t lo = 0, hi = expandedSpec.size();
     while (lo < hi && std::isspace(static_cast<unsigned char>(expandedSpec[lo]))) ++lo;
     while (hi > lo && std::isspace(static_cast<unsigned char>(expandedSpec[hi - 1]))) --hi;
@@ -3505,13 +3505,14 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
         // Visual Studio IDE rejects item wildcards/globs entirely during project loading
         if (decoded.find('*') != std::string::npos || decoded.find('?') != std::string::npos) {
             addDebug("ClCompile item glob not supported by Visual Studio IDE layout, skipped: '" + decoded + "'");
-        } else {
-            // Emplace as a single literal token pair
-            result.emplace_back(decoded, toAbsoluteExpanded(decoded, projectDir));
+            return std::make_pair(std::string(), std::string());
         }
+
+        // Return a single token pair mapping directly to one literal path on disk
+        return std::make_pair(decoded, toAbsoluteExpanded(decoded, projectDir));
     }
 
-    return result;
+    return std::make_pair(std::string(), std::string());
 }
 
 void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
@@ -3523,50 +3524,41 @@ void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
     if (!update)
         return;
 
-    const std::vector<std::pair<std::string, std::string>> updateItems =
+    const std::pair<std::string, std::string> updateItem =
         expandItemSpec(update, baseDir, properties);
 
+    if (updateItem.first.empty())
+        return;
+
     for (ItemGroupClCompile &compile : compileList) {
-        const bool matches = std::any_of(
-            updateItems.cbegin(),
-            updateItems.cend(),
-            [&compile](const std::pair<std::string, std::string> &item) {
-            return Path::sameFileName(item.second, compile.filename);
-        });
-
-        if (!matches)
-            continue;
-
-        for (const tinyxml2::XMLElement *child = node->FirstChildElement();
-             child;
-             child = child->NextSiblingElement()) {
-            applyClCompileChild(child, properties, compile.metadata);
+        if (Path::sameFileName(updateItem.second, compile.filename)) {
+            for (const tinyxml2::XMLElement *child = node->FirstChildElement();
+                 child;
+                 child = child->NextSiblingElement()) {
+                applyClCompileChild(child, properties, compile.metadata);
+            }
+            applyAdditionalOptions(compile.metadata);
         }
-
-        applyAdditionalOptions(compile.metadata);
     }
 }
 
 void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
                                          const std::string &baseDir,
                                          const PropertiesMap &properties,
-                                         std::list<ItemGroupClCompile> &compileList) {
+                                         std::list<ItemGroupClCompile> &compileList)
+{
     const char *remove = node->Attribute("Remove");
     if (!remove)
         return;
 
-    const std::vector<std::pair<std::string, std::string>> removeItems =
+    const std::pair<std::string, std::string> removeItem =
         expandItemSpec(remove, baseDir, properties);
 
-    for (auto it = compileList.begin(); it != compileList.end();) {
-        const bool matches = std::any_of(
-            removeItems.cbegin(),
-            removeItems.cend(),
-            [&it](const std::pair<std::string, std::string> &item) {
-            return Path::sameFileName(item.second, it->filename);
-        });
+    if (removeItem.first.empty())
+        return;
 
-        if (matches)
+    for (auto it = compileList.begin(); it != compileList.end();) {
+        if (Path::sameFileName(removeItem.second, it->filename))
             it = compileList.erase(it);
         else
             ++it;
@@ -3577,101 +3569,77 @@ ImportProject::ImportResult ImportProject::processCompile(const tinyxml2::XMLEle
                                                           const std::string &projectDir,
                                                           const PropertiesMap &properties,
                                                           const MetadataMap &metadata,
-                                                          std::list<ItemGroupClCompile> &compileList) {
+                                                          std::list<ItemGroupClCompile> &compileList)
+{
     const char *include = node->Attribute("Include");
     if (!include)
         return ImportResult::NotFound;
 
-    // Include may be a semicolon-separated list; expandItemSpec resolves each segment.
-    const std::vector<std::pair<std::string, std::string>> specs = expandItemSpec(include, projectDir, properties);
-    if (specs.empty())
+    const std::pair<std::string, std::string> spec = expandItemSpec(include, projectDir, properties);
+    if (spec.first.empty())
         return ImportResult::NotFound;
 
-    for (const std::pair<std::string, std::string> &spec : specs) {
-        const std::string &toInclude = spec.second;
-        if (!Path::acceptFile(toInclude))
-            continue;
+    const std::string &toInclude = spec.second;
+    if (!Path::acceptFile(toInclude))
+        return ImportResult::Ok;
 
-        ItemGroupClCompile compile(toInclude);
-        // a file with no override of its own inherits the ItemDefinitionGroup value outright
-        compile.metadata = metadata;
+    ItemGroupClCompile compile(toInclude);
+    compile.metadata = metadata;
 
-        // Seed well-known item metadata (%(Identity), %(FullPath), %(Filename), etc.).
-        // In MSBuild these are computed from the item's identity and cannot be overridden
-        // by ItemDefinitionGroup; they are frequently referenced in AdditionalOptions,
-        // include paths, and PreprocessorDefinitions so they must be present for
-        // expandMSBuildVariables() to resolve %(Key) references correctly.
-        const std::string base = stripDirectoryPart(toInclude);
-        const std::string::size_type dot = base.rfind('.');
-        const std::string ext = dot != std::string::npos ? base.substr(dot) : std::string();
-        const std::string stem = fileStem(base);
+    const std::string base = stripDirectoryPart(toInclude);
+    const std::string::size_type dot = base.rfind('.');
+    const std::string ext = dot != std::string::npos ? base.substr(dot) : std::string();
+    const std::string stem = fileStem(base);
 
-        // Decompose the absolute path into a root prefix and a directory suffix.
-        std::string rootDir;
-        std::size_t afterRoot = 0;
-        if (toInclude.size() >= 2 && toInclude[0] == '/' && toInclude[1] == '/') {
-            // UNC: root is "//server/share/"
-            const std::size_t srv = toInclude.find('/', 2);
-            const std::size_t shr = (srv != std::string::npos) ? toInclude.find('/', srv + 1) : std::string::npos;
-            if (shr != std::string::npos) {
-                rootDir = toInclude.substr(0, shr + 1);
-                afterRoot = shr + 1;
-            } else {
-                rootDir = toInclude;
-            }
-        } else if (toInclude.size() >= 2 &&
-                   std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
-                   toInclude[1] == ':') {
-            if (toInclude.size() > 2 && toInclude[2] == '/') {
-                // DriveAbsolute: C:/foo.cpp -> RootDir = "C:/"
-                rootDir = toInclude.substr(0, 2) + "/";
-                afterRoot = 3;
-            } else {
-                // DriveRelative: C:foo.cpp has no root directory
-                afterRoot = 2;
-            }
-        } else if (!toInclude.empty() && toInclude[0] == '/') {
-            rootDir = "/";
-            afterRoot = 1;
+    std::string rootDir;
+    std::size_t afterRoot = 0;
+    if (toInclude.size() >= 2 && toInclude[0] == '/' && toInclude[1] == '/') {
+        const std::size_t srv = toInclude.find('/', 2);
+        const std::size_t shr = (srv != std::string::npos) ? toInclude.find('/', srv + 1) : std::string::npos;
+        if (shr != std::string::npos) {
+            rootDir = toInclude.substr(0, shr + 1);
+            afterRoot = shr + 1;
+        } else {
+            rootDir = toInclude;
         }
-        const std::size_t lastSlash = toInclude.rfind('/');
-        const std::string directory = (lastSlash != std::string::npos && lastSlash >= afterRoot)
-                                      ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
-                                      : std::string();
-
-        compile.metadata["Identity"] = Path::fromNativeSeparators(spec.first);
-        compile.metadata["FullPath"] = toInclude;
-        compile.metadata["RootDir"] = rootDir;
-        compile.metadata["Filename"] = stem;
-        compile.metadata["Extension"] = ext;
-        compile.metadata["Directory"] = directory;
-        // %(RecursiveDir) is the portion of the path matched by a ** wildcard.
-        // The importer does not expand glob specs (they are skipped with a
-        // diagnostic above), so this metadata is always empty here.  If wildcard
-        // expansion were ever added, %(RecursiveDir) and %(RelativeDir) would
-        // both need to be derived from the matched filesystem path, not from the
-        // original spec string.
-        compile.metadata["RecursiveDir"] = std::string();
-        // %(RelativeDir) is the directory portion of the item spec as originally
-        // written (after property expansion, before toAbsolute()), normalised to
-        // forward slashes with a trailing separator.  For explicit (non-glob)
-        // includes this matches MSBuild's behaviour; for glob items it would
-        // instead need to be computed from the matched path, but those are never
-        // reached here.
-        const std::string origNorm = Path::fromNativeSeparators(spec.first);
-        const std::size_t relSlash = origNorm.rfind('/');
-        compile.metadata["RelativeDir"] = (relSlash != std::string::npos)
-                                          ? origNorm.substr(0, relSlash + 1)
-                                          : std::string();
-
-        for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement())
-            applyClCompileChild(e1, properties, compile.metadata);
-
-        applyAdditionalOptions(compile.metadata);
-
-        compileList.emplace_back(std::move(compile));
+    } else if (toInclude.size() >= 2 &&
+               std::isalpha(static_cast<unsigned char>(toInclude[0])) &&
+               toInclude[1] == ':') {
+        if (toInclude.size() > 2 && toInclude[2] == '/') {
+            rootDir = toInclude.substr(0, 2) + "/";
+            afterRoot = 3;
+        } else {
+            afterRoot = 2;
+        }
+    } else if (!toInclude.empty() && toInclude[0] == '/') {
+        rootDir = "/";
+        afterRoot = 1;
     }
+    const std::size_t lastSlash = toInclude.rfind('/');
+    const std::string directory = (lastSlash != std::string::npos && lastSlash >= afterRoot)
+        ? toInclude.substr(afterRoot, lastSlash - afterRoot + 1)
+        : std::string();
 
+    compile.metadata["Identity"] = Path::fromNativeSeparators(spec.first);
+    compile.metadata["FullPath"] = toInclude;
+    compile.metadata["RootDir"] = rootDir;
+    compile.metadata["Filename"] = stem;
+    compile.metadata["Extension"] = ext;
+    compile.metadata["Directory"] = directory;
+    compile.metadata["RecursiveDir"] = std::string();
+
+    const std::string origNorm = Path::fromNativeSeparators(spec.first);
+    const std::size_t relSlash = origNorm.rfind('/');
+    compile.metadata["RelativeDir"] = (relSlash != std::string::npos)
+        ? origNorm.substr(0, relSlash + 1)
+        : std::string();
+
+    for (const tinyxml2::XMLElement *e1 = node->FirstChildElement(); e1; e1 = e1->NextSiblingElement())
+        applyClCompileChild(e1, properties, compile.metadata);
+
+    applyAdditionalOptions(compile.metadata);
+
+    compileList.emplace_back(std::move(compile));
     return ImportResult::Ok;
 }
 

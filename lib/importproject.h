@@ -231,9 +231,9 @@ private:
     // Returns (original-segment, absolute-path) pairs.  The original segment is
     // the spec after property expansion but before toAbsolute(), preserving the
     // relative form needed to compute %(RelativeDir) in processCompile().
-    std::vector<std::pair<std::string, std::string>> expandItemSpec(const std::string &spec,
-                                                                    const std::string &projectDir,
-                                                                    const PropertiesMap &properties);
+    std::pair<std::string, std::string> expandItemSpec(const std::string &spec,
+                                                       const std::string &projectDir,
+                                                       const PropertiesMap &properties);
     std::string applyMSBuildStaticFunction(const std::string &className,
                                            const std::string &member,
                                            const std::vector<std::string> &args,
