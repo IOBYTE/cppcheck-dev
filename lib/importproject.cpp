@@ -3475,60 +3475,42 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     }
 }
 
-// Expand a semicolon-separated MSBuild item spec (possibly containing
-// $(Property) references) into a list of resolved absolute paths.
-// Segments containing glob wildcards (* ?) are logged to debugs and omitted.
 std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(const std::string &spec,
                                                                                const std::string &projectDir,
-                                                                               const PropertiesMap &properties)
-{
+                                                                               const PropertiesMap &properties) {
     std::vector<std::pair<std::string, std::string>> result;
     if (spec.empty())
         return result;
 
-    // Phase 1: Pre-expand outer macros to catch properties holding multi-path strings (e.g., $(MyCoreFiles))
+    // Phase 1: Expand outer macros (Visual Studio handles this for static layout hooks)
     std::string expandedSpec = spec;
     expandMSBuildVariables(expandedSpec, properties);
 
-    // Phase 2: Split the fully expanded text string by semicolons, respecting quotes
-    std::vector<std::string> finalSegments;
-    std::string currentSeg;
-    bool inQuotes = false;
+    // Phase 2: Treat the ENTIRE expanded string as a single literal path.
+    // Visual Studio IDE does NOT split 'Include' attributes by semicolons.
+    std::size_t lo = 0, hi = expandedSpec.size();
+    while (lo < hi && std::isspace(static_cast<unsigned char>(expandedSpec[lo]))) ++lo;
+    while (hi > lo && std::isspace(static_cast<unsigned char>(expandedSpec[hi - 1]))) --hi;
 
-    for (char c : expandedSpec) {
-        if (c == '"') {
-            inQuotes = !inQuotes;
-            currentSeg += c;
-        } else if (c == ';' && !inQuotes) {
-            if (!currentSeg.empty()) {
-                finalSegments.push_back(std::move(currentSeg));
-                currentSeg.clear();
-            }
+    if (lo < hi) {
+        std::string trimmed = expandedSpec.substr(lo, hi - lo);
+
+        // Strip outer encapsulation quotes if present across the entire path string
+        if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
+            trimmed = trimmed.substr(1, trimmed.size() - 2);
+        }
+
+        const std::string decoded = msbuildUnescape(trimmed);
+
+        // Visual Studio IDE rejects item wildcards/globs entirely during project loading
+        if (decoded.find('*') != std::string::npos || decoded.find('?') != std::string::npos) {
+            addDebug("ClCompile item glob not supported by Visual Studio IDE layout, skipped: '" + decoded + "'");
         } else {
-            currentSeg += c;
+            // Emplace as a single literal token pair
+            result.emplace_back(decoded, toAbsoluteExpanded(decoded, projectDir));
         }
     }
-    if (!currentSeg.empty())
-        finalSegments.push_back(std::move(currentSeg));
 
-    // Phase 3: Normalize and resolve paths for each cleanly isolated segment filename
-    for (const std::string &seg : finalSegments) {
-        // Trim leading and trailing whitespace text content
-        std::size_t lo = 0, hi = seg.size();
-        while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo]))) ++lo;
-        while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1]))) --hi;
-
-        if (lo < hi) {
-            const std::string trimmed = seg.substr(lo, hi - lo);
-            const std::string decoded = msbuildUnescape(trimmed);
-
-            if (decoded.find('*') != std::string::npos || decoded.find('?') != std::string::npos) {
-                addDebug("ClCompile item glob not supported, skipped: '" + decoded + "'");
-            } else {
-                result.emplace_back(decoded, toAbsoluteExpanded(decoded, projectDir));
-            }
-        }
-    }
     return result;
 }
 
