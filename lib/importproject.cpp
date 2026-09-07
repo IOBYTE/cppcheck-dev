@@ -4185,11 +4185,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
             if (!fileFilters.empty() && !filtermatcher.match(compile.filename))
                 continue;
 
-            {
-                const std::string &excl = compile.get("ExcludedFromBuild");
-                if (!excl.empty() && caseInsensitiveStringCompare(excl, "true") == 0)
-                    continue;
-            }
+            const std::string &excl = compile.get("ExcludedFromBuild");
+            if (!excl.empty() && caseInsensitiveStringCompare(excl, "true") == 0)
+                continue;
 
             if (!guiProject.checkVsConfigs.empty()) {
                 const bool doChecking = std::any_of(guiProject.checkVsConfigs.cbegin(), guiProject.checkVsConfigs.cend(), [&](const std::string &c) {
@@ -4460,12 +4458,14 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 defines = std::move(filtered);
             }
             fsSetDefines(fs, defines);
-            {
-                const auto includePathIt = properties.find("IncludePath");
-                fsSetIncludePaths(fs, projectDir, toStringList(includePathIt != properties.end() ? includePathIt->second : std::string()), properties);
-            }
+            const auto includePathIt = properties.find("IncludePath");
+            fsSetIncludePaths(fs, projectDir, toStringList(includePathIt != properties.end() ? includePathIt->second : std::string()), properties);
+
+            std::string rawAdditionalIncludes = compile.get("AdditionalIncludeDirectories");
+            expandMSBuildVariables(rawAdditionalIncludes, properties); // Pre-expand so toStringList splits them cleanly!
+
             fs.systemIncludePaths = std::move(fs.includePaths);
-            fsSetIncludePaths(fs, projectDir, toStringList(compile.get("AdditionalIncludeDirectories")), properties);
+            fsSetIncludePaths(fs, projectDir, toStringList(rawAdditionalIncludes), properties);
 
             std::string rawForcedIncludes = compile.get("ForcedIncludeFiles");
             expandMSBuildVariables(rawForcedIncludes, properties);
