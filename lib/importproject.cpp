@@ -116,85 +116,102 @@ std::string ImportProject::collectArgs(const std::string &cmd, std::vector<std::
 
 void ImportProject::parseArgs(FileSettings &fs, const std::vector<std::string> &args)
 {
+    // Accept index by value, return a completion state pair to prevent loop corruption
     const auto getOptArg = [&args](std::initializer_list<std::string> optNames,
-                                   std::size_t &i) {
+                                   std::size_t i) -> std::pair<std::string, bool> {
         const auto &arg = args[i];
         const auto *const it = std::find_if(optNames.begin(),
                                             optNames.end(),
-                                            [&arg] (const std::string &optName) {
+                                            [&arg](const std::string &optName) {
             return startsWith(arg, optName);
         });
 
         if (it == optNames.end())
-            return std::string();
+            return std::make_pair(std::string(), false);
 
         const std::size_t optLen = it->size();
-        if (arg.size() == optLen)
-            return ++i >= args.size() ? std::string() : args[i];
+        if (arg.size() == optLen) {
+            // Space-separated argument format (e.g., /I path)
+            if (i + 1 >= args.size())
+                return std::make_pair(std::string(), false);
+            return std::make_pair(args[i + 1], true);     // true flags lookahead consumption
+        }
 
-        return arg.substr(optLen);
+        // Glued argument format (e.g., /Ipath)
+        return std::make_pair(arg.substr(optLen), false);
     };
 
     std::string defs;
     for (std::size_t i = 0; i < args.size(); i++) {
-        std::string optArg;
+        if (args[i].empty())
+            continue;
 
-        if (!(optArg = getOptArg({ "-I", "/I" }, i)).empty()) {
+        std::pair<std::string, bool> optResult;
+
+        if (!(optResult = getOptArg({ "-I", "/I" }, i)).first.empty()) {
             if (std::none_of(fs.includePaths.cbegin(), fs.includePaths.cend(),
                              [&](const std::string &path) {
-                return path == optArg;
-            }))
-                fs.includePaths.push_back(std::move(optArg));
+                return path == optResult.first;
+            })) {
+                fs.includePaths.push_back(std::move(optResult.first));
+            }
+            if (optResult.second) i++; // Safely advance only if the separate lookahead was consumed
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-isystem" }, i)).empty()) {
-            fs.systemIncludePaths.push_back(std::move(optArg));
+        if (!(optResult = getOptArg({ "-isystem" }, i)).first.empty()) {
+            fs.systemIncludePaths.push_back(std::move(optResult.first));
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-include", "/FI", "-FI" }, i)).empty()) {
-            fs.forcedIncludes.push_back(std::move(optArg));
+        if (!(optResult = getOptArg({ "-include", "/FI", "-FI" }, i)).first.empty()) {
+            fs.forcedIncludes.push_back(std::move(optResult.first));
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-D", "/D" }, i)).empty()) {
-            defs += optArg + ";";
+        if (!(optResult = getOptArg({ "-D", "/D" }, i)).first.empty()) {
+            defs += optResult.first + ";";
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-U", "/U" }, i)).empty()) {
-            fs.undefs.insert(std::move(optArg));
+        if (!(optResult = getOptArg({ "-U", "/U" }, i)).first.empty()) {
+            fs.undefs.insert(std::move(optResult.first));
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-std=", "/std:" }, i)).empty()) {
-            fs.standard = std::move(optArg);
+        if (!(optResult = getOptArg({ "-std=", "/std:" }, i)).first.empty()) {
+            fs.standard = std::move(optResult.first);
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-f" }, i)).empty()) {
-            if (optArg == "pic")
+        if (!(optResult = getOptArg({ "-f" }, i)).first.empty()) {
+            if (optResult.first == "pic")
                 defs += "__pic__;";
-            else if (optArg == "PIC")
+            else if (optResult.first == "PIC")
                 defs += "__PIC__;";
-            else if (optArg == "pie")
+            else if (optResult.first == "pie")
                 defs += "__pie__;";
-            else if (optArg == "PIE")
+            else if (optResult.first == "PIE")
                 defs += "__PIE__;";
+            if (optResult.second) i++;
             continue;
         }
 
-        if (!(optArg = getOptArg({ "-m" }, i)).empty()) {
-            if (optArg == "unicode")
+        if (!(optResult = getOptArg({ "-m" }, i)).first.empty()) {
+            if (optResult.first == "unicode")
                 defs += "UNICODE;";
+            if (optResult.second) i++;
             continue;
         }
     }
 
     fsSetDefines(fs, std::move(defs));
 }
-
 void ImportProject::ignorePaths(const std::vector<std::string> &ipaths, bool debug)
 {
     PathMatch matcher(ipaths, Path::getCurrentPath());
@@ -3084,6 +3101,37 @@ void ImportProject::addProperty(const tinyxml2::XMLElement *node, PropertiesMap 
     findAndReplaceCaseInsensitive(text, selfRef, original);
     expandMSBuildVariables(text, properties);
     properties[eName] = text;
+    if (caseInsensitiveStringCompare(eName, "ConfigurationType") == 0) {
+        std::string targetExtension = ".exe"; // Windows standard floor default
+        bool extDetermined = false;
+
+        if (caseInsensitiveStringCompare(text, "StaticLibrary") == 0) {
+            targetExtension = ".lib";
+            extDetermined = true;
+        } else if (caseInsensitiveStringCompare(text, "DynamicLibrary") == 0) {
+            targetExtension = ".dll";
+            extDetermined = true;
+        } else if (caseInsensitiveStringCompare(text, "Application") == 0) {
+            targetExtension = ".exe";
+            extDetermined = true;
+        } else if (caseInsensitiveStringCompare(text, "Makefile") == 0 ||
+                   caseInsensitiveStringCompare(text, "Utility") == 0) {
+            targetExtension = ""; // Explicitly clear target extension for meta/script nodes
+            extDetermined = true;
+        }
+
+        // Only overwrite TargetExt if the project file hasn't already provided
+        // an explicit, dedicated user extension override.
+        if (properties.find("TargetExt") == properties.end() || extDetermined) {
+            properties["TargetExt"] = targetExtension;
+        }
+
+        // TargetName defaults to ProjectName when ConfigurationType is established
+        if (properties.find("TargetName") == properties.end() && properties.count("ProjectName") > 0) {
+            properties["TargetName"] = properties["ProjectName"];
+        }
+    }
+
     checkUnexpandedExpressions(text, eName);
 }
 
@@ -3097,15 +3145,23 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
     text = Path::fromNativeSeparators(std::move(text));
     const std::string metaSelfRef = "%(" + std::string(eName) + ")";
     const std::string propSelfRef = "$(" + std::string(eName) + ")";
+
     // Pre-expand the accumulated metadata value before embedding it: resolve %(other)
     // metadata refs and $(prop) refs inside `original` first, then break any tainted
     // self-references, so they don't propagate into the new value and risk step-3 erasure.
     std::string original = metadata[eName];
     findAndReplaceCaseInsensitive(original, metaSelfRef, "");
     std::string::size_type p = 0;
+
+    // Add a substitution tracking depth limit to explicitly catch and break
+    // circular/infinite macro evaluation loops from malformed recursive property sheets.
+    std::size_t substitutionDepth = 0;
     while ((p = original.find("%(", p)) != std::string::npos) {
-        // Use findMatchingParen so nested parens inside a metadata value are
-        // handled correctly.  p points at '%'; p+1 is the opening '('.
+        if (++substitutionDepth > 100) {
+            addDebug("Circular metadata inheritance chain broken in addMetadata for: " + std::string(eName));
+            break;
+        }
+
         const std::string::size_type e = findMatchingParen(original, p + 1);
         if (e == std::string::npos)
             break;
@@ -3115,11 +3171,19 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
         original.replace(p, e - p + 1, repl);
         p += repl.size();
     }
+
     expandMSBuildVariables(original, properties);
     findAndReplaceCaseInsensitive(original, propSelfRef, "");
     findAndReplaceCaseInsensitive(text, metaSelfRef, original);
+
     std::string::size_type pos = 0;
+    std::size_t textSubstitutionDepth = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
+        if (++textSubstitutionDepth > 100) {
+            addDebug("Circular text metadata reference chain broken in addMetadata for: " + std::string(eName));
+            break;
+        }
+
         const std::string::size_type end = findMatchingParen(text, pos + 1);
         if (end == std::string::npos)
             break;
@@ -3129,14 +3193,15 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
         text.replace(pos, end - pos + 1, replacement);
         pos += replacement.size();
     }
+
     expandMSBuildVariables(text, properties);
+
     // Handle $(eName) self-references: some props files use property-style
     // accumulation (e.g. <DisableSpecificWarnings>$(DisableSpecificWarnings);4100
     // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks.
     findAndReplace(text, propSelfRef, original);
     findAndReplace(text, propSelfRef, "");
     metadata[eName] = text;
-    checkUnexpandedExpressions(text, eName);
     checkUnexpandedExpressions(text, eName);
 }
 
@@ -3152,12 +3217,22 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
     text = Path::fromNativeSeparators(std::move(text));
     const std::string metaSelfRef = "%(" + std::string(eName) + ")";
     const std::string propSelfRef = "$(" + std::string(eName) + ")";
+
     // Pre-expand `original` (the prior per-item value) before embedding it,
     // matching the same strategy used in addMetadata and addProperty.
     std::string expandedOriginal = original;
     findAndReplaceCaseInsensitive(expandedOriginal, metaSelfRef, "");
     std::string::size_type p = 0;
+
+    // Add a substitution tracking depth limit to explicitly catch and break
+    // circular/infinite macro evaluation loops from malformed recursive property sheets.
+    std::size_t substitutionDepth = 0;
     while ((p = expandedOriginal.find("%(", p)) != std::string::npos) {
+        if (++substitutionDepth > 100) {
+            addDebug("Circular metadata inheritance chain broken in getMetadata for: " + std::string(eName));
+            break;
+        }
+
         const std::string::size_type e = findMatchingParen(expandedOriginal, p + 1);
         if (e == std::string::npos)
             break;
@@ -3167,11 +3242,19 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
         expandedOriginal.replace(p, e - p + 1, repl);
         p += repl.size();
     }
+
     expandMSBuildVariables(expandedOriginal, properties);
     findAndReplaceCaseInsensitive(expandedOriginal, propSelfRef, "");
     findAndReplaceCaseInsensitive(text, metaSelfRef, expandedOriginal);
+
     std::string::size_type pos = 0;
+    std::size_t textSubstitutionDepth = 0;
     while ((pos = text.find("%(", pos)) != std::string::npos) {
+        if (++textSubstitutionDepth > 100) {
+            addDebug("Circular text metadata reference chain broken in getMetadata for: " + std::string(eName));
+            break;
+        }
+
         const std::string::size_type end = findMatchingParen(text, pos + 1);
         if (end == std::string::npos)
             break;
@@ -3181,7 +3264,9 @@ std::string ImportProject::getMetadata(const tinyxml2::XMLElement *node, const P
         text.replace(pos, end - pos + 1, replacement);
         pos += replacement.size();
     }
+
     expandMSBuildVariables(text, properties);
+
     // Handle $(eName) self-references: same accumulation pattern as addMetadata.
     findAndReplaceCaseInsensitive(text, propSelfRef, expandedOriginal);
     findAndReplaceCaseInsensitive(text, propSelfRef, "");
@@ -3246,9 +3331,9 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     std::string arg;
     bool quoted = false;
 
+    // Tokenize options by space boundaries, honoring double-quote scopes
     for (std::size_t i = 0; i < additionalOptions.size(); ++i) {
         const char c = additionalOptions[i];
-
         if (c == '"') {
             quoted = !quoted;
         } else if (std::isspace(static_cast<unsigned char>(c)) && !quoted) {
@@ -3260,45 +3345,81 @@ static void applyAdditionalOptions(MetadataMap &metadata)
             arg += c;
         }
     }
-
     if (!arg.empty())
         args.emplace_back(std::move(arg));
 
     for (std::size_t i = 0; i < args.size(); ++i) {
-        const std::string &option = args[i];
+        const std::string &origOption = args[i];
+        if (origOption.empty())
+            continue;
 
-        if (option.size() >= 2 &&
-            (option[0] == '/' || option[0] == '-') &&
-            (option[1] == 'D' || option[1] == 'd')) {
+        std::string option = origOption;
+        std::transform(option.begin(), option.end(), option.begin(), [](unsigned char c) {
+            return std::tolower(c);
+        });
 
-            std::string define = option.substr(2);
+        // Ensure token starts with valid MSVC/GCC switch symbols
+        if (option[0] != '/' && option[0] != '-')
+            continue;
 
-            // /D NAME
-            if (define.empty() && i + 1 < args.size())
-                define = args[++i];
+        // 1. Precise Match for Preprocessor Definitions (/D or -D)
+        if (option.size() >= 2 && option[1] == 'd') {
+            // Verify this isn't a long system flag prefix like /debug or /diagnostics
+            if (option.size() == 2 || (option.compare(0, 12, "/diagnostics") != 0 && option.compare(0, 12, "-diagnostics") != 0 &&
+                                       option.compare(0, 6, "/debug") != 0 && option.compare(0, 6, "-debug") != 0 &&
+                                       option.compare(0, 12, "/dynamicbase") != 0 && option.compare(0, 12, "-dynamicbase") != 0 &&
+                                       option.compare(0, 6, "/delay") != 0 && option.compare(0, 6, "-delay") != 0 &&
+                                       option.compare(0, 4, "/doc") == 0 && option.compare(0, 4, "-doc") == 0)) {
 
-            if (!define.empty()) {
-                if (!metadata["PreprocessorDefinitions"].empty())
-                    metadata["PreprocessorDefinitions"] += ';';
-                metadata["PreprocessorDefinitions"] += define;
+                std::string define;
+                if (option.size() == 2) {
+                    // Form: /D MacroName (Space-separated)
+                    if (i + 1 < args.size()) {
+                        define = args[i + 1];
+                        args[i + 1] = ""; // Neutralize lookahead token to skip it cleanly next round
+                    }
+                } else {
+                    // Form: /DMacroName (Glued payload)
+                    define = origOption.substr(2);
+                }
+
+                if (!define.empty()) {
+                    if (!metadata["PreprocessorDefinitions"].empty())
+                        metadata["PreprocessorDefinitions"] += ';';
+                    metadata["PreprocessorDefinitions"] += define;
+                }
+                continue;
             }
+        }
 
-        } else if (option.size() >= 2 &&
-                   (option[0] == '/' || option[0] == '-') &&
-                   (option[1] == 'I' || option[1] == 'i')) {
+        // 2. Precise Match for Include Directories (/I or -I)
+        if (option.size() >= 2 && option[1] == 'i') {
+            // Explicitly shield long option variants like GCC's -isystem
+            if (option.compare(0, 8, "-isystem") != 0 && option.compare(0, 8, "/isystem") != 0) {
 
-            std::string path = option.substr(2);
+                std::string path;
+                if (option.size() == 2) {
+                    // Form: /I PathName (Space-separated)
+                    if (i + 1 < args.size()) {
+                        path = args[i + 1];
+                        args[i + 1] = ""; // Neutralize lookahead token to skip it cleanly next round
+                    }
+                } else {
+                    // Form: /IPathName (Glued payload)
+                    path = origOption.substr(2);
+                }
 
-            // /I path
-            if (path.empty() && i + 1 < args.size())
-                path = args[++i];
-
-            if (!path.empty()) {
-                if (!metadata["AdditionalIncludeDirectories"].empty())
-                    metadata["AdditionalIncludeDirectories"] += ';';
-                metadata["AdditionalIncludeDirectories"] += path;
+                if (!path.empty()) {
+                    if (!metadata["AdditionalIncludeDirectories"].empty())
+                        metadata["AdditionalIncludeDirectories"] += ';';
+                    metadata["AdditionalIncludeDirectories"] += path;
+                }
+                continue;
             }
-        } else if (option == "/std:c++11" || option == "-std=c++11") {
+        }
+
+        // 3. Strict String Matching for Language Standards
+        if (option == "/std:c++11" || option == "-std=c++11") {
             metadata["LanguageStandard"] = "stdcpp11";
         } else if (option == "/std:c++14" || option == "-std=c++14") {
             metadata["LanguageStandard"] = "stdcpp14";
@@ -3327,37 +3448,51 @@ std::vector<std::pair<std::string, std::string>> ImportProject::expandItemSpec(c
                                                                                const std::string &projectDir,
                                                                                const PropertiesMap &properties)
 {
-    // Expand property references so that values like "$(MyFiles)" that resolve
-    // to "a.cpp;b.cpp" are split correctly after substitution.
-    std::string expanded = spec;
-    expandMSBuildVariables(expanded, properties);
-
-    // Each entry is (trimmed-spec-segment, absolute-path).  The trimmed segment
-    // retains the original relative form (e.g. "..\src\foo.cpp") so callers can
-    // derive %(RelativeDir) without losing the caller's relative directory form.
     std::vector<std::pair<std::string, std::string>> result;
-    std::string seg;
-    for (std::size_t i = 0; i <= expanded.size(); ++i) {
-        const char c = (i < expanded.size()) ? expanded[i] : ';';
-        if (c == ';') {
-            // Trim leading/trailing whitespace.
-            std::size_t lo = 0, hi = seg.size();
-            while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo])))
-                ++lo;
-            while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1])))
-                --hi;
-            if (lo < hi) {
-                const std::string trimmed = seg.substr(lo, hi - lo);
-                const std::string decoded = msbuildUnescape(trimmed);
-                if (decoded.find('*') != std::string::npos ||
-                    decoded.find('?') != std::string::npos) {
-                    addDebug("ClCompile item glob not supported, skipped: '" + decoded + "'");
-                } else
-                    result.emplace_back(decoded, toAbsolute(decoded, projectDir, properties));
+    if (spec.empty())
+        return result;
+
+    // Phase 1: Pre-expand outer macros to catch properties holding multi-path strings (e.g., $(MyCoreFiles))
+    std::string expandedSpec = spec;
+    expandMSBuildVariables(expandedSpec, properties);
+
+    // Phase 2: Split the fully expanded text string by semicolons, respecting quotes
+    std::vector<std::string> finalSegments;
+    std::string currentSeg;
+    bool inQuotes = false;
+
+    for (char c : expandedSpec) {
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            currentSeg += c;
+        } else if (c == ';' && !inQuotes) {
+            if (!currentSeg.empty()) {
+                finalSegments.push_back(std::move(currentSeg));
+                currentSeg.clear();
             }
-            seg.clear();
         } else {
-            seg += c;
+            currentSeg += c;
+        }
+    }
+    if (!currentSeg.empty())
+        finalSegments.push_back(std::move(currentSeg));
+
+    // Phase 3: Normalize and resolve paths for each cleanly isolated segment filename
+    for (const std::string &seg : finalSegments) {
+        // Trim leading and trailing whitespace text content
+        std::size_t lo = 0, hi = seg.size();
+        while (lo < hi && std::isspace(static_cast<unsigned char>(seg[lo]))) ++lo;
+        while (hi > lo && std::isspace(static_cast<unsigned char>(seg[hi - 1]))) --hi;
+
+        if (lo < hi) {
+            const std::string trimmed = seg.substr(lo, hi - lo);
+            const std::string decoded = msbuildUnescape(trimmed);
+
+            if (decoded.find('*') != std::string::npos || decoded.find('?') != std::string::npos) {
+                addDebug("ClCompile item glob not supported, skipped: '" + decoded + "'");
+            } else {
+                result.emplace_back(decoded, toAbsolute(decoded, projectDir, properties));
+            }
         }
     }
     return result;
@@ -3960,6 +4095,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
     properties["MSBuildProjectFile"] = properties["ProjectFileName"];
     properties["MSBuildProjectFullPath"] = properties["ProjectPath"];
 
+    // TargetName defaults to ProjectName; can be overridden by the XML
+    properties.emplace("TargetName", properties["ProjectName"]);
+
     // MSBuildProjectDirectoryNoRoot: like MSBuildThisFileDirectoryNoRoot but for the
     // project itself.  ProjectDir has a trailing '/' which we strip to match the
     // MSBuildProjectDirectory (no trailing separator) convention.
@@ -3967,6 +4105,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
     if (!noRoot.empty() && noRoot.back() == '/')
         noRoot.pop_back();
     properties["MSBuildProjectDirectoryNoRoot"] = noRoot;
+
+    properties["BuildingInsideVisualStudio"] = "true";
+    properties["DesignTimeBuild"] = "true";
 
     MSBuildThis::setMSBuildThis(nfilename, properties);
 
@@ -4139,35 +4280,34 @@ bool ImportProject::importVcxproj(const std::string &filename,
             // Currently selects C or C++ from the file extension.
             bool isCFile = Path::getFilenameExtensionInLowerCase(compile.filename) == ".c";
             const std::string &compileAs = compile.get("CompileAs");
-            if (compileAs == "CompileAsC")
+            if (caseInsensitiveStringCompare(compileAs, "CompileAsC") == 0)
                 isCFile = true;
-            else if (compileAs == "CompileAsCpp")
+            else if (caseInsensitiveStringCompare(compileAs, "CompileAsCpp") == 0)
                 isCFile = false;
             if (isCFile) {
                 Standards::cstd_t cstd = Standards::C17;
                 const std::string &languageStandardC = compile.get("LanguageStandard_C");
-                if (languageStandardC == "stdc11")
+                if (caseInsensitiveStringCompare(languageStandardC, "stdc11") == 0)
                     cstd = Standards::C11;
-                else if (languageStandardC == "stdc17")
+                else if (caseInsensitiveStringCompare(languageStandardC, "stdc17") == 0)
                     cstd = Standards::C17;
-                else if (languageStandardC == "stdclatest")
+                else if (caseInsensitiveStringCompare(languageStandardC, "stdclatest") == 0)
                     cstd = Standards::CLatest;
                 fs.standard = Standards::getC(cstd);
             } else {
-                // MSVC defaults to C++14 when no /std: flag is set.
                 Standards::cppstd_t cppstd = Standards::CPP14;
                 const std::string &languageStandard = compile.get("LanguageStandard");
-                if (languageStandard == "stdcpp11")
+                if (caseInsensitiveStringCompare(languageStandard, "stdcpp11") == 0)
                     cppstd = Standards::CPP11;
-                else if (languageStandard == "stdcpp14")
+                else if (caseInsensitiveStringCompare(languageStandard, "stdcpp14") == 0)
                     cppstd = Standards::CPP14;
-                else if (languageStandard == "stdcpp17")
+                else if (caseInsensitiveStringCompare(languageStandard, "stdcpp17") == 0)
                     cppstd = Standards::CPP17;
-                else if (languageStandard == "stdcpp20")
+                else if (caseInsensitiveStringCompare(languageStandard, "stdcpp20") == 0)
                     cppstd = Standards::CPP20;
-                else if (languageStandard == "stdcpp23")
+                else if (caseInsensitiveStringCompare(languageStandard, "stdcpp23") == 0)
                     cppstd = Standards::CPP23;
-                else if (languageStandard == "stdcpplatest")
+                else if (caseInsensitiveStringCompare(languageStandard, "stdcpplatest") == 0)
                     cppstd = Standards::CPPLatest;
                 fs.standard = Standards::getCPP(cppstd);
             }
@@ -4193,19 +4333,25 @@ bool ImportProject::importVcxproj(const std::string &filename,
                     }
                 }
 
-                if (toolset == "v145") {         // VS 2026
-                    mscVer = "1950"; mscFullVer = "195000000";
-                } else if (toolset == "v144") { // VS 2025
-                    mscVer = "1940"; mscFullVer = "194000000";
-                } else if (toolset == "v143") { // VS 2022
-                    mscVer = "1930"; mscFullVer = "193000000";
-                } else if (toolset == "v142") { // VS 2019
-                    mscVer = "1920"; mscFullVer = "192000000";
-                } else if (toolset == "v141") { // VS 2017
-                    mscVer = "1910"; mscFullVer = "191000000";
-                } else if (toolset == "v140") { // VS 2015
-                    mscVer = "1900"; mscFullVer = "190000000";
-                } else if (startsWith(toolset, "v14")) {
+                if (caseInsensitiveStringCompare(toolset, "v145") == 0) {         // VS 2026
+                    mscVer = "1950";
+                    mscFullVer = "195000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v144") == 0) { // VS 2025
+                    mscVer = "1940";
+                    mscFullVer = "194000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v143") == 0) { // VS 2022
+                    mscVer = "1930";
+                    mscFullVer = "193000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v142") == 0) { // VS 2019
+                    mscVer = "1920";
+                    mscFullVer = "192000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v141") == 0) { // VS 2017
+                    mscVer = "1910";
+                    mscFullVer = "191000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v140") == 0) { // VS 2015
+                    mscVer = "1900";
+                    mscFullVer = "190000000";
+                } else if (caseInsensitiveStringCompare(toolset, "v14") == 0) {
                     try {
                         const int sub = std::stoi(toolset.substr(3));
                         mscVer = std::to_string(1900 + (sub * 10));
@@ -4261,19 +4407,17 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
 
             const std::string enableEnhancedInstructionSet = compile.get("EnableEnhancedInstructionSet");
-            if (enableEnhancedInstructionSet == "StreamingSIMDExtensions") {
-                // MSVC defines _M_IX86_FP only for x86 targets.
+            if (caseInsensitiveStringCompare(enableEnhancedInstructionSet, "StreamingSIMDExtensions") == 0) {
                 if (pc.platform == ProjectConfiguration::Win32)
                     fs.defines += ";_M_IX86_FP=1";
-            } else if (enableEnhancedInstructionSet == "StreamingSIMDExtensions2") {
-                // MSVC defines _M_IX86_FP only for x86 targets.
+            } else if (caseInsensitiveStringCompare(enableEnhancedInstructionSet, "StreamingSIMDExtensions2") == 0) {
                 if (pc.platform == ProjectConfiguration::Win32)
                     fs.defines += ";_M_IX86_FP=2";
-            } else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions")
+            } else if (caseInsensitiveStringCompare(enableEnhancedInstructionSet, "AdvancedVectorExtensions") == 0)
                 fs.defines += ";__AVX__";
-            else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions2")
+            else if (caseInsensitiveStringCompare(enableEnhancedInstructionSet, "AdvancedVectorExtensions2") == 0)
                 fs.defines += ";__AVX2__";
-            else if (enableEnhancedInstructionSet == "AdvancedVectorExtensions512")
+            else if (caseInsensitiveStringCompare(enableEnhancedInstructionSet, "AdvancedVectorExtensions512") == 0)
                 fs.defines += ";__AVX512F__";
 
             const auto charSetIt = properties.find("CharacterSet");
@@ -4283,9 +4427,9 @@ bool ImportProject::importVcxproj(const std::string &filename,
             fs.useMfc = useOfMfcIt != properties.end() && !useOfMfcIt->second.empty() &&
                         caseInsensitiveStringCompare(useOfMfcIt->second, "false") != 0;
 
-            if (charSet == "Unicode")
+            if (caseInsensitiveStringCompare(charSet, "Unicode") == 0)
                 fs.defines += ";UNICODE=1;_UNICODE=1";
-            else if (charSet == "MultiByte")
+            else if (caseInsensitiveStringCompare(charSet, "MultiByte") == 0)
                 fs.defines += ";_MBCS=1";
 
             const auto configurationTypeIt = properties.find("ConfigurationType");
