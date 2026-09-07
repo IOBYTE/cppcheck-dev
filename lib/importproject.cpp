@@ -3482,11 +3482,16 @@ std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::str
     if (spec.empty())
         return std::make_pair(std::string(), std::string());
 
-    // Phase 1: Expand outer macros (Visual Studio handles this for static layout hooks)
+    // Expand outer macros (Visual Studio handles this for static layout hooks)
     std::string expandedSpec = spec;
     expandMSBuildVariables(expandedSpec, properties);
 
-    // Phase 2: Treat the ENTIRE expanded string as a single literal path.
+    if (expandedSpec.find(';') != std::string::npos) {
+        addDebug("Multiple files or semicolon-delimited list detected in path attribute, skipped: '" + spec + "'");
+        return std::make_pair(std::string(), std::string());
+    }
+
+    // Treat the ENTIRE expanded string as a single literal path.
     // Visual Studio IDE does NOT split 'Include', 'Update', or 'Remove' attributes by semicolons.
     std::size_t lo = 0, hi = expandedSpec.size();
     while (lo < hi && std::isspace(static_cast<unsigned char>(expandedSpec[lo]))) ++lo;
@@ -3524,8 +3529,7 @@ void ImportProject::applyClCompileUpdate(const tinyxml2::XMLElement *node,
     if (!update)
         return;
 
-    const std::pair<std::string, std::string> updateItem =
-        expandItemSpec(update, baseDir, properties);
+    const std::pair<std::string, std::string> updateItem = expandItemSpec(update, baseDir, properties);
 
     if (updateItem.first.empty())
         return;
@@ -3551,8 +3555,7 @@ void ImportProject::applyClCompileRemove(const tinyxml2::XMLElement *node,
     if (!remove)
         return;
 
-    const std::pair<std::string, std::string> removeItem =
-        expandItemSpec(remove, baseDir, properties);
+    const std::pair<std::string, std::string> removeItem = expandItemSpec(remove, baseDir, properties);
 
     if (removeItem.first.empty())
         return;
@@ -4463,9 +4466,12 @@ bool ImportProject::importVcxproj(const std::string &filename,
             }
             fs.systemIncludePaths = std::move(fs.includePaths);
             fsSetIncludePaths(fs, projectDir, toStringList(compile.get("AdditionalIncludeDirectories")), properties);
-            fs.forcedIncludes.clear();
 
-            for (const std::string &forcedInclude : toStringList(compile.get("ForcedIncludeFiles"))) {
+            std::string rawForcedIncludes = compile.get("ForcedIncludeFiles");
+            expandMSBuildVariables(rawForcedIncludes, properties);
+
+            fs.forcedIncludes.clear();
+            for (const std::string &forcedInclude : toStringList(rawForcedIncludes)) {
                 if (forcedInclude.empty())
                     continue;
 
