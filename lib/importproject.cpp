@@ -43,6 +43,14 @@
 #include <utility>
 #include <vector>
 
+// Directory listing for wildcard <Import> support -- see listDirectoryFiles()
+// just above processImport().
+#ifndef _WIN32
+#include <dirent.h>
+#else
+#include <windows.h>
+#endif
+
 #include "xml.h"
 
 #include "json.h"
@@ -4230,6 +4238,82 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
     return result;
 }
 
+// Returns whether `name` matches the '*'/'?' wildcard `pattern` (case-insensitive,
+// matching NTFS semantics -- Visual Studio's C++ project system is a Windows-only
+// concept). '*' matches any run of characters (including none); '?' matches
+// exactly one character. Neither argument is expected to contain a path
+// separator -- this matches one filename against one pattern within a single
+// directory, not a path. Standard greedy iterative glob match.
+static bool matchesWildcardName(const std::string &name, const std::string &pattern)
+{
+    std::size_t n = 0, p = 0;
+    std::size_t star = std::string::npos, matchPos = 0;
+    while (n < name.size()) {
+        if (p < pattern.size() &&
+            (pattern[p] == '?' ||
+             std::tolower(static_cast<unsigned char>(pattern[p])) == std::tolower(static_cast<unsigned char>(name[n])))) {
+            ++n;
+            ++p;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            matchPos = n;
+        } else if (star != std::string::npos) {
+            p = star + 1;
+            n = ++matchPos;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '*')
+        ++p;
+    return p == pattern.size();
+}
+
+// Lists the regular files (not subdirectories) directly inside `dir` (no
+// trailing separator required, '/' separators only). Returns an empty list if
+// `dir` does not exist or cannot be opened -- a wildcard <Import> matching
+// nothing is a silent no-op, exactly like MSBuild's own ImportBefore/ImportAfter
+// extensibility folders when nothing has been dropped into them. Not recursive:
+// MSBuild's own wildcard Import examples (e.g. "ImportBefore\*") only ever
+// reach into one directory, matching the non-recursive '*' used elsewhere in
+// this file (see expandItemSpec()'s rejection of '*'/'?' in project items).
+#ifdef _WIN32
+static std::vector<std::string> listDirectoryFiles(const std::string &dir)
+{
+    std::vector<std::string> files;
+    const std::string searchPath = (dir.empty() ? std::string(".") : dir) + "/*";
+    WIN32_FIND_DATAA findData;
+    const HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return files;
+    do {
+        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            files.emplace_back(findData.cFileName);
+    } while (FindNextFileA(hFind, &findData));
+    FindClose(hFind);
+    return files;
+}
+#else
+static std::vector<std::string> listDirectoryFiles(const std::string &dir)
+{
+    std::vector<std::string> files;
+    const std::string path = dir.empty() ? std::string(".") : dir;
+    DIR * const dp = opendir(path.c_str());
+    if (!dp)
+        return files;
+    while (const struct dirent * const entry = readdir(dp)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..")
+            continue;
+        if (Path::isDirectory(path + "/" + name))
+            continue;
+        files.push_back(name);
+    }
+    closedir(dp);
+    return files;
+}
+#endif
+
 ImportProject::ImportResult ImportProject::processImport(const std::string &file,
                                                          PropertiesMap &properties,
                                                          MetadataMap &metadata,
@@ -4248,6 +4332,35 @@ ImportProject::ImportResult ImportProject::processImport(const std::string &file
     const PathKind _fkind = classifyPath(Path::fromNativeSeparators(filename));
     if (_fkind != PathKind::UNC && _fkind != PathKind::DriveAbsolute && properties.count("ProjectDir") > 0)
         filename = toAbsolute(filename, properties.at("ProjectDir"), properties);
+
+    // MSBuild allows wildcards in an <Import>'s Project attribute -- unlike
+    // project items (see expandItemSpec()'s rejection of '*'/'?' there, a
+    // *different*, narrower Visual Studio C++ project-system restriction that
+    // does not apply to imports): "When there are wildcards, all matches found
+    // are sorted (for reproducibility), and then they are imported in that
+    // order as if the order had been explicitly set." This is the mechanism
+    // behind the ImportBefore/ImportAfter extensibility folders Visual
+    // Studio's own C++ toolchain files use (e.g.
+    // $(VCTargetsPath)\ImportBefore\Default\*.props), but it applies equally
+    // to any ordinary user-authored wildcard <Import>.
+    const std::string::size_type lastSlash = filename.find_last_of('/');
+    const std::string patternPart = (lastSlash != std::string::npos) ? filename.substr(lastSlash + 1) : filename;
+    if (patternPart.find('*') != std::string::npos || patternPart.find('?') != std::string::npos) {
+        const std::string dirPart = (lastSlash != std::string::npos) ? filename.substr(0, lastSlash) : std::string();
+        std::vector<std::string> matches;
+        for (const std::string &candidate : listDirectoryFiles(dirPart)) {
+            if (matchesWildcardName(candidate, patternPart))
+                matches.push_back(candidate);
+        }
+        std::sort(matches.begin(), matches.end());
+        ImportResult result = ImportResult::Ok;
+        for (const std::string &match : matches) {
+            const ImportResult r = processImport(dirPart + "/" + match, properties, metadata, compileList,
+                                                 projectConfigurationList, importStack, phase);
+            result = std::max(result, r);
+        }
+        return result;
+    }
 
     const std::string key = importFileKey(filename);
     // Detect circular imports before duplicate-import suppression.
