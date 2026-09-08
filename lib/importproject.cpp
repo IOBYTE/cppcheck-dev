@@ -3576,6 +3576,47 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     }
 }
 
+// Visual Studio's C++ project system does not support macros in project item
+// paths in general: "Macros that change their value for different
+// configurations will cause problems... The IDE doesn't expect project item
+// paths to be different for different project configurations." The one
+// documented exception is a small, fixed set of MSBuild "this file"/"this
+// project" location properties, whose value cannot vary by configuration or
+// platform -- these are exactly what Visual Studio's own Shared Items
+// projects (.vcxitems) use to write portable Include paths, e.g.
+// <ClCompile Include="$(MSBuildThisFileDirectory)TestClass.cpp" /> (see
+// test/cli/shared-items-project). expandItemSpec() below expands only these.
+static const std::set<std::string> &invariantItemPathProperties() {
+    static const std::set<std::string> props = {
+        "MSBuildThisFileDirectory", "MSBuildThisFileFullPath", "MSBuildThisFile",
+        "MSBuildThisFileName", "MSBuildThisFileExtension", "MSBuildThisFileDirectoryNoRoot",
+        "MSBuildProjectDirectory", "MSBuildProjectFullPath", "MSBuildProjectFile",
+        "MSBuildProjectName", "MSBuildProjectExtension", "MSBuildProjectDirectoryNoRoot",
+        "SolutionDir", "ProjectDir",
+    };
+    return props;
+}
+
+// Returns whether every $(...) reference in `spec` is a bare reference (no
+// .Method(...) chain, no $([Class]::...) static function) to one of the
+// config-invariant properties above. A false result means `spec` depends on
+// something Visual Studio's C++ project system does not reliably resolve in
+// a project item path (see invariantItemPathProperties()'s doc comment) --
+// expandItemSpec() must not expand it.
+static bool hasOnlyInvariantItemPathVariables(const std::string &spec) {
+    std::size_t pos = 0;
+    while ((pos = spec.find("$(", pos)) != std::string::npos) {
+        std::size_t i = pos + 2;
+        std::string name;
+        while (i < spec.size() && (std::isalnum(static_cast<unsigned char>(spec[i])) || spec[i] == '_'))
+            name += spec[i++];
+        if (name.empty() || i >= spec.size() || spec[i] != ')' || !invariantItemPathProperties().count(name))
+            return false;
+        pos = i + 1;
+    }
+    return true;
+}
+
 std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::string &spec,
                                                                   const std::string &projectDir,
                                                                   const PropertiesMap &properties)
@@ -3583,9 +3624,21 @@ std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::str
     if (spec.empty())
         return std::make_pair(std::string(), std::string());
 
-    // Expand outer macros (Visual Studio handles this for static layout hooks)
     std::string expandedSpec = spec;
-    expandMSBuildVariables(expandedSpec, properties);
+    if (hasOnlyInvariantItemPathVariables(spec)) {
+        // Visual Studio's own Shared Items mechanism -- these properties don't
+        // vary by configuration, so expanding them here matches what the IDE
+        // itself does (see invariantItemPathProperties()).
+        expandMSBuildVariables(expandedSpec, properties);
+    } else if (spec.find("$(") != std::string::npos) {
+        // Some other macro reference -- Visual Studio's C++ project system does
+        // not support this in a project item path (see
+        // invariantItemPathProperties()'s doc comment). Treat it the same way
+        // as the wildcard/glob rejection below: unsupported by the IDE, so
+        // don't act as if it were expanded.
+        addDebug("Macro in item path not supported by Visual Studio IDE layout, skipped: '" + spec + "'");
+        return std::make_pair(std::string(), std::string());
+    }
 
     if (expandedSpec.find(';') != std::string::npos) {
         addDebug("Multiple files or semicolon-delimited list detected in path attribute, skipped: '" + spec + "'");
