@@ -4253,7 +4253,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // mechanism (Directory.Build.props, ForceImportBeforeCppProps, etc.) is honoured
     // generically -- no special-casing of individual property names required.
     // We also process <PropertyGroup> nodes so that properties needed to resolve import
-    // paths are available.  Stop as soon as configurations are found.
+    // paths are available.  Scan every top-level node regardless of whether earlier
+    // ones already contributed configurations: real MSBuild/Visual Studio must know
+    // the complete configuration set before evaluation with a specific Configuration/
+    // Platform can even begin, so it does not stop at the first one found either --
+    // configurations can legitimately be split across multiple imports (e.g. one
+    // property sheet per configuration, each behind its own Condition), and stopping
+    // early would silently lose every configuration contributed by a later sibling.
     // Use isolated copies of properties, metadata and importStack so that side-effects
     // of the discovery imports (extra properties, pre-populated import stack, etc.) do
     // not bleed into the real per-configuration import pass that follows.
@@ -4282,13 +4288,13 @@ bool ImportProject::importVcxproj(const std::string &filename,
         std::list<ItemGroupClCompile> discoverCompile;
         std::unordered_set<std::string> discoverStack;
         for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement();
-             node && projectConfigurationList.empty();
+             node;
              node = node->NextSiblingElement()) {
             if (hasName(node, "PropertyGroup", discoverProps)) {
                 for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
                     addProperty(e, discoverProps);
             } else if (hasName(node, "ImportGroup", discoverProps)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e && projectConfigurationList.empty(); e = e->NextSiblingElement()) {
+                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
                     if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
                         processImportProject(e, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
                 }
