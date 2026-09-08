@@ -2833,14 +2833,6 @@ bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeNa
     return conditionIsTrue(node, properties);
 }
 
-bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
-    const char *name = node->Name();
-    const char *attr = node->Attribute(attrName);
-    if (!name || !attr || std::strcmp(nodeName, name) != 0)
-        return false;
-    return conditionIsTrue(node, properties);
-}
-
 bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
     const char *name = node->Name();
     const char *label = node->Attribute("Label");
