@@ -213,6 +213,18 @@ private:
                                     std::list<ProjectConfiguration> &projectConfigurationList,
                                     std::unordered_set<std::string> &importStack,
                                     EvalPhase phase);
+    // Decide (Properties pass) or replay (ItemDefs/Items pass) which single
+    // <When>/<Otherwise> child of a <Choose> is taken, then process that child's
+    // own children (PropertyGroup/ItemDefinitionGroup/ItemGroup/ImportGroup/nested
+    // Choose) exactly as processElementChildren() would process them inline.
+    ImportResult processChoose(const tinyxml2::XMLElement *node,
+                               const std::string &baseDir,
+                               PropertiesMap &properties,
+                               MetadataMap &metadata,
+                               std::list<ItemGroupClCompile> &compileList,
+                               std::list<ProjectConfiguration> &projectConfigurationList,
+                               std::unordered_set<std::string> &importStack,
+                               EvalPhase phase);
     ImportResult processCompile(const tinyxml2::XMLElement *node,
                                 const std::string &projectDir,
                                 const PropertiesMap &properties,
@@ -270,6 +282,22 @@ private:
     // the three-pass evaluation (mImportGraph inactive) this simply returns
     // `conditionHolds` unchanged.
     bool importGraphDecision(bool conditionHolds, std::string &file);
+    // Same decide/replay discipline as importGraphDecision(), for a <Choose>'s
+    // branch selection instead of an <Import>'s target file. During the
+    // Properties pass `matched` (already computed by the caller: did any
+    // <When> match, or is there an <Otherwise> to fall back to) and `branch`
+    // (the 0-based index, among the Choose's <When>/<Otherwise> children in
+    // document order, of the one that matched) are recorded and returned/left
+    // as-is. During ItemDefs/Items, both are ignored and the recorded pair is
+    // replayed instead: a <When>'s Condition may reference a property that was
+    // still unset (or held a different value) when the Properties pass reached
+    // this Choose, so recomputing it against the now-final properties could
+    // select a different branch than Properties actually walked -- desyncing
+    // the properties Properties built from the items/definitions ItemDefs/Items
+    // evaluate, exactly like an Import resolving to a different file would.
+    // Outside the three-pass evaluation (mImportGraph inactive) this simply
+    // returns `matched` unchanged.
+    bool importGraphChooseDecision(bool matched, std::size_t &branch);
     // Attempt one of the synthetic (non-XML) imports the Microsoft.Cpp.Default.props /
     // .props / .targets emulation performs implicitly: the ForceImportBeforeXxx /
     // ForceImportAfterXxx hook properties, and the Directory.Build.props/.targets
@@ -304,11 +332,15 @@ private:
     /// for item definitions and items.
     struct ImportGraph {
         /// One import-graph branch point's outcome, as decided during the
-        /// Properties pass: whether it was taken and, if so, the target file it
-        /// resolved to at that time (frozen so later passes reuse it verbatim).
+        /// Properties pass: whether it was taken and, if so, either the target
+        /// file it resolved to at that time (Import/ImportGroup) or the index of
+        /// the <When>/<Otherwise> child it selected (Choose) -- whichever applies
+        /// to this branch point's kind -- frozen so later passes reuse it
+        /// verbatim instead of recomputing it against possibly-different state.
         struct Decision {
             bool taken = false;
-            std::string file;
+            std::string file;      ///< Import/ImportGroup only; unused for Choose.
+            std::size_t branch = 0; ///< Choose only; unused for Import/ImportGroup.
         };
         /// Files already imported during the current pass. An imported file is
         /// processed at most once per pass; a repeated <Import> of it is ignored

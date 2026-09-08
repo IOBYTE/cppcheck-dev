@@ -2894,13 +2894,38 @@ bool ImportProject::importGraphDecision(bool conditionHolds, std::string &file)
     return conditionHolds;
 }
 
+bool ImportProject::importGraphChooseDecision(bool matched, std::size_t &branch)
+{
+    if (!mImportGraph.active)
+        return matched;
+
+    auto &decisions = mImportGraph.decisions[mImportGraph.currentFile];
+
+    if (mImportGraph.replay) {
+        auto &pos = mImportGraph.cursor[mImportGraph.currentFile];
+        if (pos >= decisions.size()) {
+            addDebug("import graph replay desync in '" + mImportGraph.currentFile + "'");
+            return false;
+        }
+        const ImportGraph::Decision &decision = decisions[pos++];
+        branch = decision.branch;
+        return decision.taken;
+    }
+
+    ImportGraph::Decision decision;
+    decision.taken = matched;
+    decision.branch = matched ? branch : 0;
+    decisions.push_back(std::move(decision));
+    return matched;
+}
+
 ImportProject::ImportResult ImportProject::attemptSyntheticImport(std::string file,
-                                                                   PropertiesMap &properties,
-                                                                   MetadataMap &metadata,
-                                                                   std::list<ItemGroupClCompile> &compileList,
-                                                                   std::list<ProjectConfiguration> &projectConfigurationList,
-                                                                   std::unordered_set<std::string> &importStack,
-                                                                   EvalPhase phase)
+                                                                  PropertiesMap &properties,
+                                                                  MetadataMap &metadata,
+                                                                  std::list<ItemGroupClCompile> &compileList,
+                                                                  std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                  std::unordered_set<std::string> &importStack,
+                                                                  EvalPhase phase)
 {
     if (!importGraphDecision(!file.empty(), file))
         return ImportResult::Ok;
@@ -3907,6 +3932,64 @@ ImportProject::ImportResult ImportProject::processImportGroup(const tinyxml2::XM
     return ret;
 }
 
+ImportProject::ImportResult ImportProject::processChoose(const tinyxml2::XMLElement *node,
+                                                         const std::string &baseDir,
+                                                         PropertiesMap &properties,
+                                                         MetadataMap &metadata,
+                                                         std::list<ItemGroupClCompile> &compileList,
+                                                         std::list<ProjectConfiguration> &projectConfigurationList,
+                                                         std::unordered_set<std::string> &importStack,
+                                                         EvalPhase phase) {
+    bool matched = false;
+    std::size_t branch = 0;
+
+    if (!mImportGraph.replay) {
+        // Decide (or, outside the three-pass evaluation e.g. Discover, simply
+        // compute) which branch is taken: the first <When> (document order)
+        // whose Condition evaluates true, or the <Otherwise> if none did. Unlike
+        // PropertyGroup/ItemGroup/etc., <Choose> itself carries no Condition --
+        // only its <When> children do -- so this does not go through hasName().
+        std::size_t index = 0;
+        std::size_t otherwiseIndex = 0;
+        bool haveOtherwise = false;
+        for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement(), ++index) {
+            const char *childName = child->Name();
+            if (!childName)
+                continue;
+            if (std::strcmp(childName, "When") == 0) {
+                const char *cond = child->Attribute("Condition");
+                if (cond && evalCondition(cond, properties)) {
+                    matched = true;
+                    branch = index;
+                    break;
+                }
+            } else if (std::strcmp(childName, "Otherwise") == 0 && !haveOtherwise) {
+                haveOtherwise = true;
+                otherwiseIndex = index;
+            }
+        }
+        if (!matched && haveOtherwise) {
+            matched = true;
+            branch = otherwiseIndex;
+        }
+    }
+
+    if (!importGraphChooseDecision(matched, branch))
+        return ImportResult::Ok;
+
+    // Re-locate the taken child by index rather than reusing a pointer from the
+    // scan above: on replay this file's XML may have been reloaded into a fresh
+    // tinyxml2::XMLDocument since the Properties pass ran (processImport() opens
+    // a new document per phase for every imported file), so any XMLElement*
+    // captured earlier would not be valid here.
+    std::size_t index = 0;
+    for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement(), ++index) {
+        if (index == branch)
+            return processElementChildren(child, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+    }
+    return ImportResult::Ok;
+}
+
 ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2::XMLElement *parent,
                                                                   const std::string &baseDir,
                                                                   PropertiesMap &properties,
@@ -3988,6 +4071,14 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
                 const ImportResult importResult = processImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 result = std::max(result, importResult);
             }
+        } else if (std::strcmp(node->Name() ? node->Name() : "", "Choose") == 0) {
+            // <Choose>'s branch selection is an import-graph branch point exactly
+            // like <Import>/<ImportGroup> -- see processChoose() and
+            // importGraphChooseDecision() for why it must be decided once
+            // (Properties) and replayed (ItemDefs/Items) rather than
+            // re-evaluated every phase.
+            const ImportResult chooseResult = processChoose(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            result = std::max(result, chooseResult);
         } else {
             // processImportProject() itself checks whether `node` is structurally an
             // <Import Project="..."> element (safely no-opping otherwise) and, when it
@@ -4239,8 +4330,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
         mImportGraph.imported.insert(rootKey);
 
         const ImportResult propertiesResult = processElementChildren(rootnode, projectDir, properties, metadata,
-                                                                      compileList, projectConfigurationList, importStack,
-                                                                      EvalPhase::Properties);
+                                                                     compileList, projectConfigurationList, importStack,
+                                                                     EvalPhase::Properties);
         if (propertiesResult > ImportResult::NotResolvable)
             addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(propertiesResult));
 
@@ -4269,8 +4360,8 @@ bool ImportProject::importVcxproj(const std::string &filename,
         importStack.clear();
 
         const ImportResult itemsResult = processElementChildren(rootnode, projectDir, properties, metadata,
-                                                                 compileList, projectConfigurationList, importStack,
-                                                                 EvalPhase::Items);
+                                                                compileList, projectConfigurationList, importStack,
+                                                                EvalPhase::Items);
         if (itemsResult > ImportResult::NotResolvable)
             addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(itemsResult));
 
