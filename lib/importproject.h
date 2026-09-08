@@ -270,6 +270,7 @@ private:
     bool evalCondition(const std::string &condition, const PropertiesMap &properties);
     bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
     bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties);
+    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
     // Decide (Properties pass) or replay (ItemDefs/Items pass) whether one import-graph
@@ -371,6 +372,16 @@ private:
 
     std::string mPath;
     std::set<std::string> mAllVSConfigs;
+    /// Names of properties that resolve to the SAME value in every one of this
+    /// project's configurations, computed once per project file by a priming
+    /// walk over projectConfigurationList (see importVcxproj()) before the
+    /// real per-configuration passes run. A macro is unsafe in a project item
+    /// path only if its value could differ by configuration -- see
+    /// expandItemSpec()'s use of this alongside invariantItemPathProperties()
+    /// -- so this set, not just that fixed name list, is what a macro's name
+    /// is checked against. Cleared and repopulated at the top of each
+    /// importVcxproj() call; empty (and therefore inert) before the first one.
+    std::set<std::string> mConfigInvariantProperties;
     ImportGraph mImportGraph;
     /// True only while importVcxproj()'s discovery bootstrap scan (used when a
     /// project has no inline ProjectConfigurations) is walking the document. While

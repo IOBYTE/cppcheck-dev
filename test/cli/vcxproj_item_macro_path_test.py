@@ -6,21 +6,28 @@
 # in metadata values or Condition attributes, which is unaffected).
 #
 # Microsoft documents that the Visual Studio C++ project system does not
-# support macros in project item paths in general -- "The IDE doesn't expect
-# project item paths to be different for different project configurations" --
-# see https://learn.microsoft.com/en-us/cpp/build/reference/vcxproj-file-structure
-# The one documented exception is the fixed set of MSBuild "this file"/"this
-# project" location properties (MSBuildThisFileDirectory and friends), which
-# don't vary by configuration and are exactly what Visual Studio's own Shared
-# Items projects rely on -- see test/cli/shared-items-project, covered
-# separately by test_shared_items_project() in more-projects_test.py.
+# reliably resolve a macro in a project item path if that macro's value could
+# differ by configuration -- "The IDE doesn't expect project item paths to be
+# different for different project configurations" -- see
+# https://learn.microsoft.com/en-us/cpp/build/reference/vcxproj-file-structure
+# That is specifically about macros whose value VARIES by configuration: the
+# fixed set of MSBuild "this file"/"this project" location properties
+# (MSBuildThisFileDirectory and friends) are always exempt, since they can't
+# vary by construction -- see test/cli/shared-items-project, covered
+# separately by test_shared_items_project() in more-projects_test.py -- and so
+# is any other property THIS project happens to resolve to the same value in
+# every one of its configurations, e.g. one a property sheet sets once,
+# unconditionally (see vcxproj_item_macro_path_invariant_test.py).
 #
-# This fixture's only <ClCompile> item is
-# Include="$(SomeDir)\foo.cpp", where SomeDir is an ordinary user-defined
-# property (not one of the invariant location properties above). Expanding
-# $(SomeDir) here would resolve to a real file on disk (SomeDir/foo.cpp) and
-# get it checked -- but real Visual Studio does not expand it, so the item
-# stays unresolved and the project has no valid source files at all.
+# This fixture's only <ClCompile> item is Include="$(SomeDir)\foo.cpp", where
+# SomeDir is an ordinary user-defined property that genuinely differs between
+# the project's two configurations (SomeDir for Debug|x64, SomeOtherDir for
+# Release|x64) -- exactly the case Visual Studio can't reliably resolve, since
+# a single Solution Explorer file list can't show two different files
+# depending on which configuration happens to be active. Expanding $(SomeDir)
+# here would resolve to a real file on disk in either configuration -- but
+# real Visual Studio does not expand it, so the item stays unresolved in both
+# and the project has no valid source files at all.
 
 import os
 

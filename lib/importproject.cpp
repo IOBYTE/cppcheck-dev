@@ -2847,6 +2847,14 @@ bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeNa
     return conditionIsTrue(node, properties);
 }
 
+bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    const char *attr = node->Attribute(attrName);
+    if (!name || !attr || std::strcmp(nodeName, name) != 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
+
 bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
     const char *name = node->Name();
     const char *label = node->Attribute("Label");
@@ -3590,16 +3598,29 @@ static void applyAdditionalOptions(MetadataMap &metadata)
     }
 }
 
-// Visual Studio's C++ project system does not support macros in project item
-// paths in general: "Macros that change their value for different
-// configurations will cause problems... The IDE doesn't expect project item
-// paths to be different for different project configurations." The one
-// documented exception is a small, fixed set of MSBuild "this file"/"this
-// project" location properties, whose value cannot vary by configuration or
-// platform -- these are exactly what Visual Studio's own Shared Items
-// projects (.vcxitems) use to write portable Include paths, e.g.
+// Visual Studio's C++ project system does not reliably resolve a macro in a
+// project item path if that macro's value COULD differ by configuration:
+// "Macros that change their value for different configurations will cause
+// problems... The IDE doesn't expect project item paths to be different for
+// different project configurations." That is a statement about macros whose
+// value varies by configuration, not about user-defined macros in general --
+// a macro a property sheet or PropertyGroup sets to a fixed location (e.g.
+// $(BoostRoot) or $(wxMathPlot) pointing at a third-party library, unconditional
+// on Configuration/Platform) resolves the same way regardless of which
+// configuration the IDE happens to evaluate, so real Visual Studio expands it
+// in an Include/Update/Remove path exactly as it would anywhere else.
+//
+// A small, fixed set of MSBuild "this file"/"this project" location
+// properties are ALWAYS config-invariant by construction, no matter what a
+// given project does with them -- these are exactly what Visual Studio's own
+// Shared Items projects (.vcxitems) use to write portable Include paths, e.g.
 // <ClCompile Include="$(MSBuildThisFileDirectory)TestClass.cpp" /> (see
-// test/cli/shared-items-project). expandItemSpec() below expands only these.
+// test/cli/shared-items-project). Everything else is only as safe as this
+// particular project makes it: mConfigInvariantProperties (see its doc
+// comment in importproject.h) is computed per project file by priming every
+// configuration's Properties pass before the real per-configuration passes
+// run, and holds every property name that came out with the same value in
+// all of them.
 static const std::set<std::string> &invariantItemPathProperties() {
     static const std::set<std::string> props = {
         "MSBuildThisFileDirectory", "MSBuildThisFileFullPath", "MSBuildThisFile",
@@ -3612,19 +3633,22 @@ static const std::set<std::string> &invariantItemPathProperties() {
 }
 
 // Returns whether every $(...) reference in `spec` is a bare reference (no
-// .Method(...) chain, no $([Class]::...) static function) to one of the
-// config-invariant properties above. A false result means `spec` depends on
-// something Visual Studio's C++ project system does not reliably resolve in
-// a project item path (see invariantItemPathProperties()'s doc comment) --
-// expandItemSpec() must not expand it.
-static bool hasOnlyInvariantItemPathVariables(const std::string &spec) {
+// .Method(...) chain, no $([Class]::...) static function) to a property that
+// is always config-invariant (invariantItemPathProperties() above) or that
+// this project's configInvariant set says is config-invariant here (every
+// configuration of THIS project resolved it to the same value -- see
+// mConfigInvariantProperties's doc comment). A false result means `spec`
+// depends on something Visual Studio's C++ project system does not reliably
+// resolve in a project item path -- expandItemSpec() must not expand it.
+static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std::set<std::string> &configInvariant) {
     std::size_t pos = 0;
     while ((pos = spec.find("$(", pos)) != std::string::npos) {
         std::size_t i = pos + 2;
         std::string name;
         while (i < spec.size() && (std::isalnum(static_cast<unsigned char>(spec[i])) || spec[i] == '_'))
             name += spec[i++];
-        if (name.empty() || i >= spec.size() || spec[i] != ')' || !invariantItemPathProperties().count(name))
+        if (name.empty() || i >= spec.size() || spec[i] != ')' ||
+            (!invariantItemPathProperties().count(name) && !configInvariant.count(name)))
             return false;
         pos = i + 1;
     }
@@ -3639,14 +3663,17 @@ std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::str
         return std::make_pair(std::string(), std::string());
 
     std::string expandedSpec = spec;
-    if (hasOnlyInvariantItemPathVariables(spec)) {
-        // Visual Studio's own Shared Items mechanism -- these properties don't
-        // vary by configuration, so expanding them here matches what the IDE
-        // itself does (see invariantItemPathProperties()).
+    if (hasOnlyInvariantItemPathVariables(spec, mConfigInvariantProperties)) {
+        // Every $(...) reference here is either one of Visual Studio's own
+        // "this file"/"this project" properties, or a property this project
+        // resolves to the same value in every configuration -- either way,
+        // expanding it here matches what the IDE itself does (see
+        // invariantItemPathProperties() and mConfigInvariantProperties).
         expandMSBuildVariables(expandedSpec, properties);
     } else if (spec.find("$(") != std::string::npos) {
-        // Some other macro reference -- Visual Studio's C++ project system does
-        // not support this in a project item path (see
+        // Some other macro reference, one whose value could differ by
+        // configuration in this project -- Visual Studio's C++ project system
+        // does not support that in a project item path (see
         // invariantItemPathProperties()'s doc comment). Treat it the same way
         // as the wildcard/glob rejection below: unsupported by the IDE, so
         // don't act as if it were expanded.
@@ -4572,6 +4599,55 @@ bool ImportProject::importVcxproj(const std::string &filename,
 
     PropertiesMap originalVariables = properties;
 
+    // Visual Studio (like MSBuild) evaluates a project in three passes over the
+    // whole resolved import graph: every PropertyGroup/Import first, so every
+    // property -- wherever in the graph it is set -- is final before anything
+    // else runs, then every ItemDefinitionGroup, then every ItemGroup. See the
+    // EvalPhase doc comment and importGraphDecision() for the full rationale.
+    const std::string rootKey = importFileKey(nfilename);
+
+    // Prime mConfigInvariantProperties: an isolated Properties-only walk per
+    // configuration (same idea as the discovery bootstrap above -- scratch
+    // copies of properties/metadata/import state so nothing here bleeds into
+    // the real per-configuration passes below), just to learn which property
+    // names resolve to the same value in every configuration this project
+    // has. expandItemSpec() (via hasOnlyInvariantItemPathVariables()) treats
+    // those, in addition to the fixed MSBuild "this file"/"this project" set,
+    // as safe to expand in a project item path -- see mConfigInvariantProperties's
+    // doc comment in importproject.h for why that's the right line to draw.
+    // With zero or one configuration every property trivially qualifies (there
+    // is nothing for it to vary across), which is correct: a project that
+    // only ever builds one way can't run into the per-configuration mismatch
+    // the underlying Visual Studio restriction is about.
+    mConfigInvariantProperties.clear();
+    {
+        std::map<std::string, std::set<std::string>> valuesByProperty;
+        for (const ProjectConfiguration &primePc : projectConfigurationList) {
+            PropertiesMap primeProperties = originalVariables;
+            primeProperties["Configuration"] = primePc.configuration;
+            primeProperties["Platform"] = primePc.platformStr;
+
+            MetadataMap primeMetadata;
+            std::list<ItemGroupClCompile> primeCompileList;
+            std::unordered_set<std::string> primeImportStack;
+
+            mImportGraph = ImportGraph();
+            mImportGraph.active = true;
+            mImportGraph.currentFile = rootKey;
+            mImportGraph.imported.insert(rootKey);
+
+            processElementChildren(rootnode, projectDir, primeProperties, primeMetadata, primeCompileList,
+                                   projectConfigurationList, primeImportStack, EvalPhase::Properties);
+
+            for (const auto &prop : primeProperties)
+                valuesByProperty[prop.first].insert(prop.second);
+        }
+        for (const auto &prop : valuesByProperty) {
+            if (prop.second.size() == 1)
+                mConfigInvariantProperties.insert(prop.first);
+        }
+    }
+
     bool first = true;
 
     for (const ProjectConfiguration &pc : projectConfigurationList) {
@@ -4585,13 +4661,6 @@ bool ImportProject::importVcxproj(const std::string &filename,
 
         properties["Configuration"] = pc.configuration;
         properties["Platform"] = pc.platformStr;
-
-        // Visual Studio (like MSBuild) evaluates a project in three passes over the
-        // whole resolved import graph: every PropertyGroup/Import first, so every
-        // property -- wherever in the graph it is set -- is final before anything
-        // else runs, then every ItemDefinitionGroup, then every ItemGroup. See the
-        // EvalPhase doc comment and importGraphDecision() for the full rationale.
-        const std::string rootKey = importFileKey(nfilename);
 
         // Pass 1 (Properties): decide, for every import-graph branch point, whether it
         // is taken -- using the properties known at that exact point in the walk --
