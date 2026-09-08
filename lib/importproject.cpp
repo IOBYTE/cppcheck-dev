@@ -3877,8 +3877,19 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
             }
 
             // Emulate key side-effect: Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets.
-            attemptSyntheticImport(findFileAbove(projectDir, "Directory.Build.targets"),
-                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            // $(ImportDirectoryBuildTargets) defaults to true; an explicit "false"
+            // suppresses the import entirely. $(DirectoryBuildTargetsPath), when set,
+            // overrides the upward directory search with an explicit file. See
+            // Microsoft's "Customize your build by folder or solution" docs.
+            const auto importTargetsIt = properties.find("ImportDirectoryBuildTargets");
+            if (importTargetsIt == properties.end() || caseInsensitiveStringCompare(importTargetsIt->second, "false") != 0) {
+                const auto targetsPathIt = properties.find("DirectoryBuildTargetsPath");
+                const std::string directoryBuildTargets = (targetsPathIt != properties.end() && !targetsPathIt->second.empty())
+                                                          ? targetsPathIt->second
+                                                          : findFileAbove(projectDir, "Directory.Build.targets");
+                attemptSyntheticImport(directoryBuildTargets,
+                                       properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            }
 
             const auto afterIt = properties.find("ForceImportAfterCppTargets");
             attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
@@ -3898,8 +3909,19 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
             // Directory.Build.props is an ordinary import: it is walked in every phase so
             // that its ItemDefinitionGroups and ItemGroups are collected as well, exactly
             // like Directory.Build.targets in the Microsoft.Cpp.targets emulation above.
-            attemptSyntheticImport(findFileAbove(projectDir, "Directory.Build.props"),
-                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            // $(ImportDirectoryBuildProps) defaults to true; an explicit "false" suppresses
+            // the import entirely. $(DirectoryBuildPropsPath), when set, overrides the
+            // upward directory search with an explicit file. See Microsoft's "Customize
+            // your build by folder or solution" docs.
+            const auto importPropsIt = properties.find("ImportDirectoryBuildProps");
+            if (importPropsIt == properties.end() || caseInsensitiveStringCompare(importPropsIt->second, "false") != 0) {
+                const auto propsPathIt = properties.find("DirectoryBuildPropsPath");
+                const std::string directoryBuildProps = (propsPathIt != properties.end() && !propsPathIt->second.empty())
+                                                        ? propsPathIt->second
+                                                        : findFileAbove(projectDir, "Directory.Build.props");
+                attemptSyntheticImport(directoryBuildProps,
+                                       properties, metadata, compileList, projectConfigurationList, importStack, phase);
+            }
 
             // Emulate key defaults set by Microsoft.Cpp.Default.props (properties only).
             // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
