@@ -2851,6 +2851,21 @@ bool ImportProject::hasNameAndNotLabel(const tinyxml2::XMLElement *node, const c
     return conditionIsTrue(node, properties);
 }
 
+// Structural name check only -- unlike hasName(), does NOT evaluate `node`'s own
+// Condition attribute. Microsoft documents that the Visual Studio C++ project
+// system does not support Condition on project items themselves (item types
+// governed by a rule definition, e.g. ClCompile/ClInclude/etc. inside an
+// <ItemGroup> or <ItemDefinitionGroup>): "Conditions aren't supported for
+// Project items (that is, item types that are treated as project items by
+// rules definitions)." -- only Condition on the item's *metadata* children is
+// honored there (see applyClCompileChild(), which still calls conditionIsTrue()
+// for exactly that reason). Use this instead of hasName() when checking a
+// project item element's name for that reason.
+static bool hasElementName(const tinyxml2::XMLElement *node, const char *nodeName) {
+    const char *name = node->Name();
+    return name && std::strcmp(nodeName, name) == 0;
+}
+
 // Canonical key identifying one project/props/targets file within an evaluation:
 // forward slashes, '.'/'..' collapsed, lower-cased (NTFS is case-insensitive, and
 // MSBuild's own import bookkeeping is case-insensitive too).
@@ -4057,9 +4072,12 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
             // computed -- matching MSBuild's own item-definition evaluation, which runs
             // as a separate pass over the whole graph after property evaluation.
             if (phase == EvalPhase::ItemDefs) {
-                // Evaluate metadata defaults sequentially to capture preceding overrides
+                // Evaluate metadata defaults sequentially to capture preceding overrides.
+                // Structural name check only (hasElementName(), not hasName()): Visual
+                // Studio does not support Condition on the ClCompile item-definition
+                // element itself, only on its metadata children -- see hasElementName().
                 for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
-                    if (!hasName(item, "ClCompile", properties))
+                    if (!hasElementName(item, "ClCompile"))
                         continue;
 
                     for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
@@ -4090,8 +4108,12 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
             // and ItemDefs have already computed -- matching MSBuild's own item
             // evaluation, the last of its three passes over the whole graph.
             if (phase == EvalPhase::Items) {
+                // Structural name check only (hasElementName(), not hasName()): Visual
+                // Studio's C++ project system does not support Condition on a ClCompile
+                // project item itself -- only on its metadata children (see
+                // hasElementName()) -- so a Condition here must not hide the item.
                 for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
-                    if (!hasName(item, "ClCompile", properties))
+                    if (!hasElementName(item, "ClCompile"))
                         continue;
 
                     if (item->Attribute("Include"))
