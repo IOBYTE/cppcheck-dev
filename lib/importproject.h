@@ -96,10 +96,16 @@ public:
         NotValid,
     };
 
-    /// The ordered Evaluate model handles both definitions and properties inline.
+    /// Visual Studio (like MSBuild) evaluates a project in separate passes over the
+    /// whole resolved import graph: every PropertyGroup/Import first (so every
+    /// property, wherever in the graph it is set, is final before anything else
+    /// runs), then every ItemDefinitionGroup, then every ItemGroup. A PropertyGroup
+    /// positioned after an ItemDefinitionGroup -- or reached through a file imported
+    /// later in the document -- is still visible to that earlier ItemDefinitionGroup.
     enum class EvalPhase : std::uint8_t {
-        Properties, ///< Discovery/property-only evaluation
-        Evaluate,   ///< Ordered Visual Studio evaluation
+        Properties, ///< Pass 1: PropertyGroup + Import/ImportGroup only; decides and records the import graph
+        ItemDefs,   ///< Pass 2: ItemDefinitionGroup only; replays the recorded import graph
+        Items,      ///< Pass 3: ItemGroup only; replays the recorded import graph
         Discover,   ///< Structural discovery mode; isolates trace diagnostics
     };
 
@@ -248,14 +254,35 @@ private:
     bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
-    // Decide whether an <Import> / <ImportGroup> element is taken.
-    // MSBuild resolves the import graph exactly once, while evaluating properties.
-    // During an ordered Evaluate pass this evaluates Import conditions at the point
-    // where the Import is encountered. The graph's imported set still suppresses a
-    // subsequent import of the same file, but conditions are not replayed from an
-    // earlier property-only pass. The legacy ItemDefs/Items replay mechanism remains
-    // available for callers that explicitly request those phases.
-    bool importTaken(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
+    // Decide (Properties pass) or replay (ItemDefs/Items pass) whether one import-graph
+    // branch point -- an <Import>, an <ImportGroup>, or a synthetic ForceImportXxx /
+    // Directory.Build.* import attempt performed by attemptSyntheticImport() -- is
+    // taken. During the Properties pass `conditionHolds` (already evaluated by the
+    // caller) is recorded and returned as-is, and `file` (the target path the caller
+    // has already resolved, if any) is recorded alongside it. During ItemDefs/Items,
+    // both the condition and the file the caller just (re)computed are ignored, and
+    // the recorded pair from the Properties pass is replayed instead: the resolved
+    // file's own $(...) references may include a property that was still unset (or
+    // held a different value) at the point Properties visited this branch, so
+    // recomputing it against the now-final properties could resolve to a different
+    // file than Properties actually walked, which would desync the properties
+    // Properties built from the items/definitions ItemDefs/Items evaluate. Outside
+    // the three-pass evaluation (mImportGraph inactive) this simply returns
+    // `conditionHolds` unchanged.
+    bool importGraphDecision(bool conditionHolds, std::string &file);
+    // Attempt one of the synthetic (non-XML) imports the Microsoft.Cpp.Default.props /
+    // .props / .targets emulation performs implicitly: the ForceImportBeforeXxx /
+    // ForceImportAfterXxx hook properties, and the Directory.Build.props/.targets
+    // auto-import. `file` is the already-resolved target path, or empty if there is
+    // nothing to import. Participates in the same decide/replay discipline as a
+    // regular <Import> element via importGraphDecision().
+    ImportResult attemptSyntheticImport(std::string file,
+                                        PropertiesMap &properties,
+                                        MetadataMap &metadata,
+                                        std::list<ItemGroupClCompile> &compileList,
+                                        std::list<ProjectConfiguration> &projectConfigurationList,
+                                        std::unordered_set<std::string> &importStack,
+                                        EvalPhase phase);
     void checkUnexpandedExpressions(const std::string &text, const char *context);
     bool simplifyPathWithVariables(std::string &s, const PropertiesMap &properties);
     void addProperty(const tinyxml2::XMLElement *node, PropertiesMap &properties);
@@ -267,13 +294,41 @@ private:
     static void setSolution(const std::string &filename, PropertiesMap &properties);
     void addDebug(const std::string &msg);
 
-    /// In the ordered Evaluate pass, conditions are evaluated live and the imported
-    /// set prevents the same file from being imported more than once.
+    /// Tracks the state of the current three-pass (Properties/ItemDefs/Items)
+    /// evaluation for one project configuration. During the Properties pass every
+    /// import-graph branch point is decided and its outcome recorded; during the
+    /// ItemDefs and Items passes those decisions are replayed in the same order
+    /// instead of being re-evaluated, so all three passes walk the identical
+    /// resolved graph -- exactly what real MSBuild/Visual Studio evaluation does by
+    /// resolving imports once, during property evaluation, and reusing that graph
+    /// for item definitions and items.
     struct ImportGraph {
-        /// Files already imported during the current evaluation. An imported file is
-        /// processed at most once; a repeated <Import> of it is ignored (MSB4011).
+        /// One import-graph branch point's outcome, as decided during the
+        /// Properties pass: whether it was taken and, if so, the target file it
+        /// resolved to at that time (frozen so later passes reuse it verbatim).
+        struct Decision {
+            bool taken = false;
+            std::string file;
+        };
+        /// Files already imported during the current pass. An imported file is
+        /// processed at most once per pass; a repeated <Import> of it is ignored
+        /// (MSB4011). Reset at the start of each pass; which files end up in it is
+        /// an automatic consequence of replaying the same decisions in the same
+        /// order, so it does not itself need to be recorded/replayed.
         std::unordered_set<std::string> imported;
+        /// Per container file (by import-file-key): the decision for each
+        /// import-graph branch point encountered while walking that file's
+        /// children, in traversal order. Populated during the Properties pass;
+        /// read-only afterwards.
+        std::map<std::string, std::vector<Decision>> decisions;
+        /// Per container file: how far ItemDefs/Items replay has consumed that
+        /// file's decisions vector. Reset at the start of each replay pass.
+        std::map<std::string, std::size_t> cursor;
+        /// Import-file-key of the file whose children are currently being walked;
+        /// keys 'decisions'/'cursor'. Maintained by CurrentFileGuard in processImport().
+        std::string currentFile;
         bool active = false;  ///< true only inside importVcxproj's per-configuration loop
+        bool replay = false;  ///< true during ItemDefs/Items: replay recorded decisions, don't decide
     };
 
     std::string mPath;

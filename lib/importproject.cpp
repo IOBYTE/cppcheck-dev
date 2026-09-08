@@ -2866,19 +2866,49 @@ static std::string importFileKey(const std::string &filename)
     return key;
 }
 
-bool ImportProject::importTaken(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties)
+bool ImportProject::importGraphDecision(bool conditionHolds, std::string &file)
 {
-    // Structural match first: the element name (and required attribute) do not depend
-    // on the phase, and only structurally matching elements take part in the record.
-    const char *name = node->Name();
-    if (!name || std::strcmp(nodeName, name) != 0)
-        return false;
-    if (attrName && !node->Attribute(attrName))
-        return false;
+    if (!mImportGraph.active)
+        return conditionHolds;
 
-    // Visual Studio and MSBuild evaluate project dependencies line-by-line.
-    // Conditional expressions are evaluated live where they are structurally encountered.
-    return conditionIsTrue(node, properties);
+    auto &decisions = mImportGraph.decisions[mImportGraph.currentFile];
+
+    if (mImportGraph.replay) {
+        auto &pos = mImportGraph.cursor[mImportGraph.currentFile];
+        if (pos >= decisions.size()) {
+            // Structural mismatch between the Properties pass and this replay pass --
+            // should not happen (both walk the same, unchanged document), but fail
+            // closed (treat as not taken) rather than read out of bounds or guess.
+            addDebug("import graph replay desync in '" + mImportGraph.currentFile + "'");
+            return false;
+        }
+        const ImportGraph::Decision &decision = decisions[pos++];
+        file = decision.file;
+        return decision.taken;
+    }
+
+    ImportGraph::Decision decision;
+    decision.taken = conditionHolds;
+    decision.file = conditionHolds ? file : std::string();
+    decisions.push_back(std::move(decision));
+    return conditionHolds;
+}
+
+ImportProject::ImportResult ImportProject::attemptSyntheticImport(std::string file,
+                                                                   PropertiesMap &properties,
+                                                                   MetadataMap &metadata,
+                                                                   std::list<ItemGroupClCompile> &compileList,
+                                                                   std::list<ProjectConfiguration> &projectConfigurationList,
+                                                                   std::unordered_set<std::string> &importStack,
+                                                                   EvalPhase phase)
+{
+    if (!importGraphDecision(!file.empty(), file))
+        return ImportResult::Ok;
+
+    const ImportResult result = processImport(file, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+    if (result > ImportResult::NotResolvable)
+        addDebug("Could not fully import \"" + file + "\" - " + importResultStr(result) + " (continuing)");
+    return result;
 }
 
 namespace {
@@ -2990,6 +3020,24 @@ namespace {
 
         ~ImportStackGuard() {
             mStack.erase(mKey);
+        }
+    };
+
+    // Tracks, for the duration of one processImport() call, which container file's
+    // children are being walked -- so importGraphDecision() keys the decision it
+    // records/replays by the right file. Restores the caller's file on return so
+    // recursion unwinds back to the correct context.
+    struct CurrentFileGuard {
+        std::string &mCurrent;
+        std::string mPrev;
+
+        CurrentFileGuard(std::string &current, std::string next)
+            : mCurrent(current), mPrev(current) {
+            mCurrent = std::move(next);
+        }
+
+        ~CurrentFileGuard() {
+            mCurrent = std::move(mPrev);
         }
     };
 }
@@ -3654,6 +3702,15 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                                                                 std::list<ProjectConfiguration> &projectConfigurationList,
                                                                 std::unordered_set<std::string> &importStack,
                                                                 EvalPhase phase) {
+    // Structural check: is `node` an <Import Project="..."> element at all? Callers
+    // no longer pre-filter this (see the call sites) -- whether it is actually taken
+    // is decided/replayed below via importGraphDecision(), which must run for every
+    // structurally-matching element, including ones whose Condition is false, so the
+    // decision sequence recorded per file stays positionally aligned with what
+    // ItemDefs/Items replay.
+    const char *elementName = node->Name();
+    if (!elementName || std::strcmp(elementName, "Import") != 0)
+        return ImportResult::Ok;
     const char *projectAttribute = node->Attribute("Project");
     if (!projectAttribute)
         return ImportResult::Ok;
@@ -3669,7 +3726,14 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
         debugs.resize(dbgSize);
         return r;
     }
-    const std::string file = toAbsolute(projectAttribute, projectDir, properties);
+    // Resolve this <Import>'s target and decide (Properties pass) or replay
+    // (ItemDefs/Items pass) whether it is taken. See importGraphDecision() for why
+    // ItemDefs/Items must reuse the file Properties actually resolved rather than
+    // recomputing toAbsolute() against properties that may have changed since.
+    std::string file = toAbsolute(projectAttribute, projectDir, properties);
+    if (!importGraphDecision(conditionIsTrue(node, properties), file))
+        return ImportResult::Ok;
+
     const std::string extension = Path::getFilenameExtensionInLowerCase(file);
     if (extension == ".props" || extension == ".targets" || extension == ".vcxitems") {
         const char *sdk = node->Attribute("Sdk");
@@ -3690,51 +3754,37 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
         };
 
         if (filenameIs("Microsoft.Cpp.targets")) {
-            auto it = properties.find("ForceImportBeforeCppTargets");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto beforeIt = properties.find("ForceImportBeforeCppTargets");
+            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             // Microsoft.Common.targets (imported by Microsoft.Cpp.targets) sets
             // OutputPath = $(OutDir) when OutputPath is not already defined.
             // Emulate this before importing Directory.Build.targets so that files
             // in that chain (e.g. bundle output paths) can expand $(OutputPath).
-            if ((phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) && properties.find("OutputPath") == properties.end()) {
+            // Property assignment only happens during the Properties pass; ItemDefs/Items
+            // reuse the properties Properties already finished computing.
+            if (phase == EvalPhase::Properties && properties.find("OutputPath") == properties.end()) {
                 const auto outDirIt = properties.find("OutDir");
                 if (outDirIt != properties.end())
                     properties["OutputPath"] = outDirIt->second;
             }
 
             // Emulate key side-effect: Microsoft.Cpp.targets -> Microsoft.Common.targets -> Directory.Build.targets.
-            std::string directoryBuildTargets = findFileAbove(projectDir, "Directory.Build.targets");
-            if (!directoryBuildTargets.empty()) {
-                ImportResult result = processImport(directoryBuildTargets, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + directoryBuildTargets + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            attemptSyntheticImport(findFileAbove(projectDir, "Directory.Build.targets"),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
-            it = properties.find("ForceImportAfterCppTargets");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto afterIt = properties.find("ForceImportAfterCppTargets");
+            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
         }
 
         if (filenameIs("Microsoft.Cpp.Default.props")) {
-            auto it = properties.find("ForceImportBeforeCppDefaultProps");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto beforeIt = properties.find("ForceImportBeforeCppDefaultProps");
+            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             // Emulate key side-effects here, including the Directory.Build.props import that
             // Microsoft.Common.props would normally perform.
@@ -3742,19 +3792,15 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
             // Directory.Build.props is an ordinary import: it is walked in every phase so
             // that its ItemDefinitionGroups and ItemGroups are collected as well, exactly
             // like Directory.Build.targets in the Microsoft.Cpp.targets emulation above.
-            std::string directoryBuildProps = findFileAbove(projectDir, "Directory.Build.props");
-            if (!directoryBuildProps.empty()) {
-                ImportResult result = processImport(directoryBuildProps, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + directoryBuildProps + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            attemptSyntheticImport(findFileAbove(projectDir, "Directory.Build.props"),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             // Emulate key defaults set by Microsoft.Cpp.Default.props (properties only).
             // Derive DefaultPlatformToolset from VisualStudioVersion (already in properties from
             // the .sln header or the importVcxproj default).  The mapping is:
             //   VS 10 -> v100, VS 11 -> v110, VS 12 -> v120,
             //   VS 14 -> v140, VS 15 -> v141, VS 16 -> v142, VS 17 -> v143, VS 18 -> v145
-            if ((phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) && properties.find("DefaultPlatformToolset") == properties.end()) {
+            if (phase == EvalPhase::Properties && properties.find("DefaultPlatformToolset") == properties.end()) {
                 auto vsIt = properties.find("VisualStudioVersion");
                 if (vsIt != properties.end()) {
                     int major = 0;
@@ -3781,13 +3827,9 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                 }
             }
 
-            it = properties.find("ForceImportAfterCppDefaultProps");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto afterIt = properties.find("ForceImportAfterCppDefaultProps");
+            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
         }
@@ -3796,15 +3838,11 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
             // ForceImportBeforeCppProps: honour any value set before Microsoft.Cpp.props
             // is processed (e.g. by the vcxproj itself or by Directory.Build.props, which
             // was already imported via the Microsoft.Cpp.Default.props handler above).
-            auto it = properties.find("ForceImportBeforeCppProps");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto beforeIt = properties.find("ForceImportBeforeCppProps");
+            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
-            if (phase == EvalPhase::Properties || phase == EvalPhase::Evaluate) {
+            if (phase == EvalPhase::Properties) {
                 // Provide the output-directory defaults normally supplied by Cpp.props.
                 // Use emplace so values already assigned earlier in the project are preserved.
                 const auto platformIt = properties.find("Platform");
@@ -3825,13 +3863,9 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                 properties.emplace("GeneratedFilesDir", "Generated Files/");
             }
 
-            it = properties.find("ForceImportAfterCppProps");
-            if (it != properties.end()) {
-                const std::string importFile = it->second;
-                ImportResult result = processImport(importFile, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-                if (result > ImportResult::NotResolvable)
-                    addDebug("Could not fully import \"" + importFile + "\" - " + importResultStr(result) + " (continuing)");
-            }
+            const auto afterIt = properties.find("ForceImportAfterCppProps");
+            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+                                   properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
         }
@@ -3858,15 +3892,16 @@ ImportProject::ImportResult ImportProject::processImportGroup(const tinyxml2::XM
                                                               EvalPhase phase) {
     ImportResult ret = ImportResult::Ok;
     for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-        if (importTaken(e, "Import", "Project", properties)) {
-            const ImportResult result = processImportProject(e, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-            if (result > ImportResult::NotResolvable) {
-                if (phase != EvalPhase::Discover) {
-                    const char *proj = e->Attribute("Project");
-                    addDebug("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
-                }
-                ret = std::max(result, ret);
+        // processImportProject() itself checks whether `e` is structurally an
+        // <Import Project="..."> element and safely no-ops (returns Ok) otherwise, so
+        // no pre-filter is needed here.
+        const ImportResult result = processImportProject(e, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+        if (result > ImportResult::NotResolvable) {
+            if (phase != EvalPhase::Discover) {
+                const char *proj = e->Attribute("Project");
+                addDebug("Could not fully import \"" + std::string(proj ? proj : "") + "\" - " + importResultStr(result) + " (continuing)");
             }
+            ret = std::max(result, ret);
         }
     }
     return ret;
@@ -3884,19 +3919,32 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
 
     for (const tinyxml2::XMLElement *node = parent->FirstChildElement(); node; node = node->NextSiblingElement()) {
         if (hasName(node, "PropertyGroup", properties)) {
-            // Always parsed in order to sustain cascading evaluation logic
-            for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
-                addProperty(child, properties);
+            // Properties pass only: by the time ItemDefs/Items run, every property in
+            // the whole resolved graph is already final in `properties` -- re-running
+            // PropertyGroup assignment then would be redundant, and evaluating it
+            // against final rather than as-accumulated properties could even produce a
+            // different value than what Properties actually computed.
+            if (phase == EvalPhase::Properties) {
+                for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
+                    addProperty(child, properties);
+            }
         } else if (hasName(node, "ItemDefinitionGroup", properties)) {
-            // Evaluate metadata defaults sequentially to capture preceding overrides
-            for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
-                if (!hasName(item, "ClCompile", properties))
-                    continue;
+            // ItemDefs pass only, using the final properties Properties has already
+            // computed -- matching MSBuild's own item-definition evaluation, which runs
+            // as a separate pass over the whole graph after property evaluation.
+            if (phase == EvalPhase::ItemDefs) {
+                // Evaluate metadata defaults sequentially to capture preceding overrides
+                for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
+                    if (!hasName(item, "ClCompile", properties))
+                        continue;
 
-                for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
-                    addMetadata(child, properties, metadata);
+                    for (const tinyxml2::XMLElement *child = item->FirstChildElement(); child; child = child->NextSiblingElement())
+                        addMetadata(child, properties, metadata);
+                }
             }
         } else if (hasNameAndLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
+            // Idempotent (guarded by alreadyPresent below) and cheap, so it is left
+            // unconditional rather than restricted to one phase.
             for (const tinyxml2::XMLElement *configuration = node->FirstChildElement("ProjectConfiguration"); configuration; configuration = configuration->NextSiblingElement("ProjectConfiguration")) {
                 const ProjectConfiguration pc(configuration);
                 if (pc.configuration.empty())
@@ -3914,8 +3962,10 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
                 }
             }
         } else if (hasNameAndNotLabel(node, "ItemGroup", "ProjectConfigurations", properties)) {
-            // Suppress source tracking updates during configuration discovery phase
-            if (phase != EvalPhase::Discover) {
+            // Items pass only, using the final properties and item definitions Properties
+            // and ItemDefs have already computed -- matching MSBuild's own item
+            // evaluation, the last of its three passes over the whole graph.
+            if (phase == EvalPhase::Items) {
                 for (const tinyxml2::XMLElement *item = node->FirstChildElement(); item; item = item->NextSiblingElement()) {
                     if (!hasName(item, "ClCompile", properties))
                         continue;
@@ -3928,10 +3978,21 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
                         applyClCompileRemove(item, baseDir, properties, compileList);
                 }
             }
-        } else if (hasName(node, "ImportGroup", properties)) {
-            const ImportResult importResult = processImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
-            result = std::max(result, importResult);
-        } else if (importTaken(node, "Import", "Project", properties)) {
+        } else if (std::strcmp(node->Name() ? node->Name() : "", "ImportGroup") == 0) {
+            // An <ImportGroup>'s own Condition gates every import inside it, so it is an
+            // import-graph branch point exactly like an individual <Import> and must be
+            // decided/replayed the same way (see importGraphDecision()) -- ImportGroup
+            // itself never resolves to a file, so the frozen-file half is unused.
+            std::string unusedFile;
+            if (importGraphDecision(conditionIsTrue(node, properties), unusedFile)) {
+                const ImportResult importResult = processImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                result = std::max(result, importResult);
+            }
+        } else {
+            // processImportProject() itself checks whether `node` is structurally an
+            // <Import Project="..."> element (safely no-opping otherwise) and, when it
+            // is, decides/replays whether it is taken (it needs to freeze the resolved
+            // file, not just the true/false).
             const ImportResult importResult = processImportProject(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
             result = std::max(result, importResult);
         }
@@ -3983,6 +4044,11 @@ ImportProject::ImportResult ImportProject::processImport(const std::string &file
     const tinyxml2::XMLElement * const rootnode = doc.FirstChildElement();
     if (rootnode == nullptr)
         return ImportResult::NotValid;
+
+    // Every import-graph branch point encountered while walking this file's children
+    // (import decisions or replays) is keyed by this file, so ItemDefs/Items replay
+    // the exact sequence Properties recorded for it.
+    CurrentFileGuard fileGuard(mImportGraph.currentFile, key);
 
     MSBuildThis msBuildThis(filename, properties);
     std::string propsDir = Path::getPathFromFilename(filename);
@@ -4157,24 +4223,56 @@ bool ImportProject::importVcxproj(const std::string &filename,
         properties["Configuration"] = pc.configuration;
         properties["Platform"] = pc.platformStr;
 
-        // Visual Studio evaluates the project and its imports in document/import order.
-        // Do not defer ItemDefinitionGroups or ItemGroups until after all PropertyGroups:
-        // a later PropertyGroup must not retroactively change an earlier item definition
-        // or item. Imports are processed recursively at the point where they occur.
-        //
-        // Keep import bookkeeping enabled so a file imported more than once is ignored.
-        // This is the normal Visual Studio evaluation pass: Import conditions are
-        // evaluated against the properties that exist at the actual Import, rather
-        // than being replayed from a separate property-only traversal.
+        // Visual Studio (like MSBuild) evaluates a project in three passes over the
+        // whole resolved import graph: every PropertyGroup/Import first, so every
+        // property -- wherever in the graph it is set -- is final before anything
+        // else runs, then every ItemDefinitionGroup, then every ItemGroup. See the
+        // EvalPhase doc comment and importGraphDecision() for the full rationale.
+        const std::string rootKey = importFileKey(nfilename);
+
+        // Pass 1 (Properties): decide, for every import-graph branch point, whether it
+        // is taken -- using the properties known at that exact point in the walk --
+        // and record the decision sequence per file.
         mImportGraph = ImportGraph();
         mImportGraph.active = true;
-        mImportGraph.imported.insert(importFileKey(nfilename));
+        mImportGraph.currentFile = rootKey;
+        mImportGraph.imported.insert(rootKey);
 
-        const ImportResult evaluationResult = processElementChildren(rootnode, projectDir, properties, metadata,
-                                                                     compileList, projectConfigurationList, importStack,
-                                                                     EvalPhase::Evaluate);
-        if (evaluationResult > ImportResult::NotResolvable)
-            addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(evaluationResult));
+        const ImportResult propertiesResult = processElementChildren(rootnode, projectDir, properties, metadata,
+                                                                      compileList, projectConfigurationList, importStack,
+                                                                      EvalPhase::Properties);
+        if (propertiesResult > ImportResult::NotResolvable)
+            addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(propertiesResult));
+
+        // Pass 2 (ItemDefs) and pass 3 (Items) walk the identical document structure
+        // again but *replay* the decisions pass 1 recorded instead of re-evaluating
+        // Condition -- re-checking against the now-final properties could produce a
+        // different graph than pass 1 built, which would desync the properties pass 1
+        // computed from the item definitions/items passes 2/3 evaluate. Which files
+        // get (re-)visited is an automatic, consistent consequence of replaying the
+        // same decisions in the same order, so only 'imported' and 'cursor' -- not
+        // 'decisions' itself -- reset between passes.
+        mImportGraph.replay = true;
+
+        mImportGraph.imported.clear();
+        mImportGraph.imported.insert(rootKey);
+        mImportGraph.cursor.clear();
+        importStack.clear();
+
+        processElementChildren(rootnode, projectDir, properties, metadata,
+                               compileList, projectConfigurationList, importStack,
+                               EvalPhase::ItemDefs);
+
+        mImportGraph.imported.clear();
+        mImportGraph.imported.insert(rootKey);
+        mImportGraph.cursor.clear();
+        importStack.clear();
+
+        const ImportResult itemsResult = processElementChildren(rootnode, projectDir, properties, metadata,
+                                                                 compileList, projectConfigurationList, importStack,
+                                                                 EvalPhase::Items);
+        if (itemsResult > ImportResult::NotResolvable)
+            addDebug("Could not fully evaluate \"" + nfilename + "\" - " + importResultStr(itemsResult));
 
         // # TODO: support signedness of char via /J (and potential XML option for it)?
         // we can only set it globally but in this context it needs to be treated per file
