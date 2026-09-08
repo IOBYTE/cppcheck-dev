@@ -106,7 +106,11 @@ public:
         Properties, ///< Pass 1: PropertyGroup + Import/ImportGroup only; decides and records the import graph
         ItemDefs,   ///< Pass 2: ItemDefinitionGroup only; replays the recorded import graph
         Items,      ///< Pass 3: ItemGroup only; replays the recorded import graph
-        Discover,   ///< Structural discovery mode; isolates trace diagnostics
+        Discover,   ///< Structural discovery bootstrap scan: PropertyGroup/ImportGroup/
+                    ///< Import/Choose are walked like Properties, but every Condition is
+                    ///< treated as satisfied and Choose explores every branch instead of
+                    ///< selecting one (see mDiscovering), and any errors/debugs generated
+                    ///< are discarded rather than surfaced.
     };
 
 protected:
@@ -217,6 +221,9 @@ private:
     // <When>/<Otherwise> child of a <Choose> is taken, then process that child's
     // own children (PropertyGroup/ItemDefinitionGroup/ItemGroup/ImportGroup/nested
     // Choose) exactly as processElementChildren() would process them inline.
+    // During the discovery bootstrap scan (mDiscovering set) this selection is
+    // skipped entirely: every <When> and any <Otherwise> is processed instead of
+    // choosing one -- see the mDiscovering branch at the top of the definition.
     ImportResult processChoose(const tinyxml2::XMLElement *node,
                                const std::string &baseDir,
                                PropertiesMap &properties,

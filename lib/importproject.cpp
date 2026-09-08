@@ -3985,9 +3985,10 @@ ImportProject::ImportResult ImportProject::processChoose(const tinyxml2::XMLElem
     std::size_t branch = 0;
 
     if (!mImportGraph.replay) {
-        // Decide (or, outside the three-pass evaluation e.g. Discover, simply
-        // compute) which branch is taken: the first <When> (document order)
-        // whose Condition evaluates true, or the <Otherwise> if none did. Unlike
+        // Decide (or, outside the three-pass evaluation, simply compute --
+        // mDiscovering is handled separately above and never reaches here)
+        // which branch is taken: the first <When> (document order) whose
+        // Condition evaluates true, or the <Otherwise> if none did. Unlike
         // PropertyGroup/ItemGroup/etc., <Choose> itself carries no Condition --
         // only its <When> children do -- so this does not go through hasName().
         std::size_t index = 0;
@@ -4325,11 +4326,17 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // properties) and costs nothing.
     if (projectConfigurationList.empty()) {
         PropertiesMap discoverProps = properties;
-        // Seed properties that are unknown at discovery time so they don't generate
-        // spurious unknown-property debug messages.  These only affect the isolated
-        // discovery copy -- the real per-config pass uses the unmodified properties map.
-        // (Conditions no longer need these to select a branch -- see mDiscovering --
-        // but property VALUES, e.g. inside a path expansion, can still reference them.)
+        // Seed properties that would otherwise be unknown at discovery time. This is
+        // more than cosmetic debug-noise suppression: simplifyPathWithVariables()
+        // treats any path with a surviving unexpanded $(...) as unresolvable, so an
+        // import whose PATH ITSELF embeds one of these -- e.g.
+        // <Import Project="$(Configuration)\Config.props" />, with no Condition or
+        // Choose gating it at all -- would otherwise fail to resolve and its
+        // configuration would be missed entirely, not just logged. Conditions
+        // themselves no longer need a guessed value to select a branch (mDiscovering
+        // ignores them, see above), but property-VALUE expansion is unaffected by
+        // that and still depends on one. These only affect the isolated discovery
+        // copy -- the real per-config pass uses the unmodified properties map.
         discoverProps.emplace("Platform", "x64");
         discoverProps.emplace("Configuration", "Debug");
         // Name-mismatched env vars (same-name ones are auto-resolved by isKnown).
