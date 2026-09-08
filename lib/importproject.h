@@ -366,6 +366,15 @@ private:
     std::string mPath;
     std::set<std::string> mAllVSConfigs;
     ImportGraph mImportGraph;
+    /// True only while importVcxproj()'s discovery bootstrap scan (used when a
+    /// project has no inline ProjectConfigurations) is walking the document. While
+    /// set, conditionIsTrue() treats every Condition as satisfied and processChoose()
+    /// explores every <When>/<Otherwise> instead of selecting one: discovery's only
+    /// goal is to enumerate every ProjectConfiguration reachable through ANY
+    /// combination of property values, and it cannot correctly predict which single
+    /// branch a real build would take for values -- Configuration/Platform above
+    /// all -- that are themselves what is being discovered. See DiscoveringGuard.
+    bool mDiscovering = false;
 };
 
 

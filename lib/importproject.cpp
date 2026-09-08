@@ -2815,6 +2815,11 @@ bool ImportProject::evalCondition(const std::string &condition, const Properties
 }
 
 bool ImportProject::conditionIsTrue(const tinyxml2::XMLElement *node,  const PropertiesMap &properties) {
+    // See mDiscovering's doc comment: while the discovery bootstrap scan is
+    // running, every Condition is treated as satisfied rather than evaluated
+    // against guessed property values.
+    if (mDiscovering)
+        return true;
     const char *condAttr = node->Attribute("Condition");
     if (!condAttr)
         return true;
@@ -3033,6 +3038,22 @@ namespace {
             propertiesMap["MSBuildThisFileDirectory"] = thisFileDirectory;
             propertiesMap["MSBuildThisFileDirectoryNoRoot"] = thisFileDirectoryNoRoot;
             propertiesMap["MSBuildThisFileFullPath"] = thisFileFullPath;
+        }
+    };
+
+    // Sets ImportProject::mDiscovering for the lifetime of the discovery bootstrap
+    // scan in importVcxproj(), and guarantees it is cleared again even if that scan
+    // exits early -- a stuck mDiscovering would silently make every subsequent
+    // Condition in the whole import (not just this project) evaluate as true.
+    struct DiscoveringGuard {
+        bool &mFlag;
+
+        explicit DiscoveringGuard(bool &flag) : mFlag(flag) {
+            mFlag = true;
+        }
+
+        ~DiscoveringGuard() {
+            mFlag = false;
         }
     };
 
@@ -3940,6 +3961,26 @@ ImportProject::ImportResult ImportProject::processChoose(const tinyxml2::XMLElem
                                                          std::list<ProjectConfiguration> &projectConfigurationList,
                                                          std::unordered_set<std::string> &importStack,
                                                          EvalPhase phase) {
+    if (mDiscovering) {
+        // Discovery cannot know which single <When> a real build would select --
+        // that depends on properties (Configuration/Platform above all) that are
+        // themselves what discovery is trying to find -- so explore every <When>
+        // and any <Otherwise> instead of picking one. mImportGraph is never active
+        // while mDiscovering is set (discovery runs before the per-configuration
+        // loop activates it), so there is no decision to record/replay here either.
+        ImportResult result = ImportResult::Ok;
+        for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement()) {
+            const char *childName = child->Name();
+            if (!childName)
+                continue;
+            if (std::strcmp(childName, "When") == 0 || std::strcmp(childName, "Otherwise") == 0) {
+                const ImportResult r = processElementChildren(child, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
+                result = std::max(result, r);
+            }
+        }
+        return result;
+    }
+
     bool matched = false;
     std::size_t branch = 0;
 
@@ -4007,7 +4048,14 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
             // PropertyGroup assignment then would be redundant, and evaluating it
             // against final rather than as-accumulated properties could even produce a
             // different value than what Properties actually computed.
-            if (phase == EvalPhase::Properties) {
+            // Also applied directly under EvalPhase::Discover: the discovery bootstrap
+            // scan in importVcxproj() walks its document through this same function
+            // (so <Choose>/<ImportGroup>/<Import> are handled identically to the real
+            // passes), and unlike an imported file reached via processImportProject()
+            // -- which converts Discover to Properties one level down before recursing
+            // -- this is the top-level entry point, so Discover itself must unlock
+            // PropertyGroup here or its properties would never be seeded at all.
+            if (phase == EvalPhase::Properties || phase == EvalPhase::Discover) {
                 for (const tinyxml2::XMLElement *child = node->FirstChildElement(); child; child = child->NextSiblingElement())
                     addProperty(child, properties);
             }
@@ -4249,25 +4297,39 @@ bool ImportProject::importVcxproj(const std::string &filename,
     }
 
     // Discovery pass: if no ProjectConfigurations were found inline in the vcxproj, walk
-    // its <Import>/<ImportGroup> nodes through processImportProject so that every MSBuild import
-    // mechanism (Directory.Build.props, ForceImportBeforeCppProps, etc.) is honoured
-    // generically -- no special-casing of individual property names required.
-    // We also process <PropertyGroup> nodes so that properties needed to resolve import
-    // paths are available.  Scan every top-level node regardless of whether earlier
-    // ones already contributed configurations: real MSBuild/Visual Studio must know
-    // the complete configuration set before evaluation with a specific Configuration/
-    // Platform can even begin, so it does not stop at the first one found either --
-    // configurations can legitimately be split across multiple imports (e.g. one
-    // property sheet per configuration, each behind its own Condition), and stopping
-    // early would silently lose every configuration contributed by a later sibling.
+    // the whole document through processElementChildren -- the same dispatch the real
+    // per-configuration passes use -- so every construct that can contain or gate a
+    // configuration-defining import (PropertyGroup, ImportGroup, a bare Import, and
+    // Choose/When/Otherwise, at any depth reached through them) is honoured generically,
+    // no special-casing of individual property names or node kinds required.
+    //
+    // While mDiscovering is set (see its doc comment and DiscoveringGuard),
+    // conditionIsTrue() treats every Condition as satisfied and processChoose()
+    // explores every branch instead of selecting one: real MSBuild/Visual Studio must
+    // know the complete configuration set before evaluation with a specific
+    // Configuration/Platform can even begin, so this scan does not try to predict
+    // which Condition would hold for values it is itself trying to discover -- it
+    // simply assumes every path might contribute a configuration and walks all of
+    // them. Configurations can legitimately be split across multiple imports (e.g.
+    // one property sheet per configuration, each behind its own Condition, or behind
+    // a Choose), and both stopping early and guessing a single property value would
+    // silently lose configurations reachable only a different way.
+    //
     // Use isolated copies of properties, metadata and importStack so that side-effects
     // of the discovery imports (extra properties, pre-populated import stack, etc.) do
-    // not bleed into the real per-configuration import pass that follows.
+    // not bleed into the real per-configuration import pass that follows -- only the
+    // configurations themselves (accumulated into projectConfigurationList/mAllVSConfigs)
+    // persist beyond this block. An extra configuration this over-inclusive scan finds
+    // either genuinely exists or simply picks up no items during the real pass (which
+    // always evaluates every Condition properly, against that configuration's real
+    // properties) and costs nothing.
     if (projectConfigurationList.empty()) {
         PropertiesMap discoverProps = properties;
         // Seed properties that are unknown at discovery time so they don't generate
         // spurious unknown-property debug messages.  These only affect the isolated
         // discovery copy -- the real per-config pass uses the unmodified properties map.
+        // (Conditions no longer need these to select a branch -- see mDiscovering --
+        // but property VALUES, e.g. inside a path expansion, can still reference them.)
         discoverProps.emplace("Platform", "x64");
         discoverProps.emplace("Configuration", "Debug");
         // Name-mismatched env vars (same-name ones are auto-resolved by isKnown).
@@ -4287,21 +4349,10 @@ bool ImportProject::importVcxproj(const std::string &filename,
         MetadataMap discoverMeta;
         std::list<ItemGroupClCompile> discoverCompile;
         std::unordered_set<std::string> discoverStack;
-        for (const tinyxml2::XMLElement *node = rootnode->FirstChildElement();
-             node;
-             node = node->NextSiblingElement()) {
-            if (hasName(node, "PropertyGroup", discoverProps)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement())
-                    addProperty(e, discoverProps);
-            } else if (hasName(node, "ImportGroup", discoverProps)) {
-                for (const tinyxml2::XMLElement *e = node->FirstChildElement(); e; e = e->NextSiblingElement()) {
-                    if (hasNameAndAttribute(e, "Import", "Project", discoverProps))
-                        processImportProject(e, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
-                }
-            } else if (hasNameAndAttribute(node, "Import", "Project", discoverProps)) {
-                processImportProject(node, projectDir, discoverProps, discoverMeta, discoverCompile, projectConfigurationList, discoverStack, EvalPhase::Discover);
-            }
-        }
+
+        DiscoveringGuard discoveringGuard(mDiscovering);
+        processElementChildren(rootnode, projectDir, discoverProps, discoverMeta, discoverCompile,
+                               projectConfigurationList, discoverStack, EvalPhase::Discover);
     }
 
     PropertiesMap originalVariables = properties;
