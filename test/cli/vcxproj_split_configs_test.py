@@ -38,7 +38,12 @@ def test_vcxproj_split_configs():
     ret, stdout, _ = cppcheck(args, cwd=__script_dir)
     assert ret == 0, stdout
 
+    # Windows prints native '\' path separators ("Checking foo\main.cpp ...");
+    # normalize before matching so this passes on every platform (same idiom
+    # used by test_log() in clang-import_test.py).
+    normalized_stdout = stdout.replace('\\', '/')
+
     # Both configurations must be discovered and checked, not just whichever
     # one the (possibly early-stopping) discovery pass happens to find first.
-    assert 'Checking vcxproj_split_configs/main.cpp Release|x64' in stdout, stdout
-    assert 'Checking vcxproj_split_configs/main.cpp Debug|x64' in stdout, stdout
+    assert 'Checking vcxproj_split_configs/main.cpp Release|x64' in normalized_stdout, stdout
+    assert 'Checking vcxproj_split_configs/main.cpp Debug|x64' in normalized_stdout, stdout
