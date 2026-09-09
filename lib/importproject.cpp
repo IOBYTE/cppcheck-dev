@@ -2755,34 +2755,68 @@ private:
 
     bool compare(const std::string &lhs, const std::string &op, const std::string &rhs) const
     {
-        // MSBuild keyword "Current" represents the installed toolset version.
-        MSBuildVersion currentVersion;
-        const auto it = mVariables.find("VisualStudioVersion");
-        if (it != mVariables.end())
-            currentVersion = MSBuildVersion::parse(it->second);
+        // Real MSBuild documents <, >, <=, >= as usable only with numeric
+        // values -- a dotted, multi-component string like '17.9.34607.119'
+        // isn't a valid number, which is precisely why the dedicated
+        // $([MSBuild]::VersionGreaterThan(...)) family of functions exists.
+        // This emulation additionally accepts such version strings directly
+        // with these four RELATIONAL operators (matching how real vcxproj
+        // imports compare things like $(VCToolsVersion)), via
+        // MSBuildVersion::compareOp() below and the "Current" keyword
+        // handling right after this comment.
+        //
+        // == and != are different: MSBuild documents them as usable "with
+        // strings, or with numeric values" -- ordinary equality/inequality,
+        // numeric if both sides parse as plain numbers (see the
+        // parseInteger() case below -- unlike <,>,<=,>=, this uniform
+        // "numeric-if-possible" rule for ==/!= IS real, documented MSBuild
+        // behavior, e.g. '$(X)' == '01' matching '$(X)' == '1'), otherwise
+        // case-insensitive string comparison. That is NOT the same thing as
+        // the zero-padded, component-wise equality
+        // $([MSBuild]::VersionEquals(...)) implements (and that
+        // MSBuildVersion::compareOp()'s "==" branch below deliberately
+        // reproduces, for that function's use): applying THAT to a plain ==
+        // would make e.g. '1.1' == '1.1.0' true, which is wrong -- that
+        // zero-padding is VersionEquals()'s own documented behavior, not
+        // =='s. So the version-comparison paths below (both the "Current"
+        // keyword and the general dotted-string one) are gated to the four
+        // relational operators only; ==/!= always fall through to the
+        // ordinary numeric-or-string handling at the bottom of this
+        // function.
+        const bool relational = (op == "<" || op == ">" || op == "<=" || op == ">=");
 
-        if (currentVersion.empty())
-            currentVersion = MSBuildVersion::parse("18.0"); // VS 2026 fallback
+        if (relational) {
+            // MSBuild keyword "Current" represents the installed toolset version.
+            MSBuildVersion currentVersion;
+            const auto it = mVariables.find("VisualStudioVersion");
+            if (it != mVariables.end())
+                currentVersion = MSBuildVersion::parse(it->second);
 
-        if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
-            const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
-            if (!rhsVersion.empty())
-                return currentVersion.compareOp(op, rhsVersion);
+            if (currentVersion.empty())
+                currentVersion = MSBuildVersion::parse("18.0"); // VS 2026 fallback
+
+            if (caseInsensitiveStringCompare(lhs, "Current") == 0) {
+                const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
+                if (!rhsVersion.empty())
+                    return currentVersion.compareOp(op, rhsVersion);
+            }
+
+            if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
+                const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
+                if (!lhsVersion.empty())
+                    return lhsVersion.compareOp(op, currentVersion);
+            }
         }
 
-        if (caseInsensitiveStringCompare(rhs, "Current") == 0) {
-            const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
-            if (!lhsVersion.empty())
-                return lhsVersion.compareOp(op, currentVersion);
-        }
-
-        // MSBuild tries numeric comparison before other comparison types.
+        // MSBuild tries numeric comparison before other comparison types --
+        // for every operator, == and != included (see this function's own
+        // comment above).
         long lhsInt = 0;
         long rhsInt = 0;
         if (parseInteger(lhs, lhsInt) && parseInteger(rhs, rhsInt))
             return applyComparison<long>(lhsInt, rhsInt, op);
 
-        // Then it tries boolean comparison.
+        // Then it tries boolean comparison -- also for every operator.
         const auto parseBoolean = [](const std::string &value, bool &result) {
             if (caseInsensitiveStringCompare(value, "true") == 0) {
                 result = true;
@@ -2800,11 +2834,14 @@ private:
         if (parseBoolean(lhs, lhsBool) && parseBoolean(rhs, rhsBool))
             return applyComparison<bool>(lhsBool, rhsBool, op);
 
-        // Then it tries Version comparison.
-        const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
-        const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
-        if (!lhsVersion.empty() && !rhsVersion.empty())
-            return lhsVersion.compareOp(op, rhsVersion);
+        if (relational) {
+            // Then it tries Version comparison -- relational operators only
+            // (see this function's own comment above).
+            const MSBuildVersion lhsVersion = MSBuildVersion::parse(lhs);
+            const MSBuildVersion rhsVersion = MSBuildVersion::parse(rhs);
+            if (!lhsVersion.empty() && !rhsVersion.empty())
+                return lhsVersion.compareOp(op, rhsVersion);
+        }
 
         // Finally, == and != fall back to case-insensitive string comparison.
         if (op == "==" || op == "!=") {

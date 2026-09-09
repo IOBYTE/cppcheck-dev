@@ -91,6 +91,7 @@ private:
         TEST_CASE(testCollectArgs6);
         TEST_CASE(testCollectArgs7);
         TEST_CASE(testVcxprojConditions);
+        TEST_CASE(testVcxprojConditionEqualityIsNotVersionComparison);
         TEST_CASE(testMSBuildStaticFunctions);
         TEST_CASE(testVcxitemsPathResolution);
         TEST_CASE(testMissingChildImportNonFatal); // missing child imports must not abort the project
@@ -801,19 +802,38 @@ private:
         // Version comparison: more than 4 parts (no truncation)
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.5' > '1.2.3.4.4'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.4' > '1.2.3.4.5'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
-        // Version equality normalizes omitted trailing components to zero.
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
-        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
-        // >=, <=, >, < use numeric version comparison; missing trailing components are treated as -1
-        // so a shorter version string sorts before a longer one: '17' < '17.0'
+        // == and != are NOT relational operators: real MSBuild documents them
+        // as ordinary equality/inequality (numeric if both sides are plain
+        // numbers, case-insensitive string otherwise), never the zero-padded,
+        // component-wise equality $([MSBuild]::VersionEquals(...)) implements
+        // (see testMSBuildStaticFunctions() for that function's own,
+        // deliberately different, semantics). '1.2.3.4.0' and '1.2.3.4' are
+        // different strings and neither parses as a plain number, so == and
+        // != see them as unequal -- even though relationally (see
+        // '17'/'17.0.0.0' below) MSBuildVersion's own comparator would treat
+        // a shorter version as simply less than a longer one, not equal to it
+        // either.
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' == '1.2.3.4'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.2.3.4.0' != '1.2.3.4'", "", ""));
+        // Relational operators (<, >, <=, >=) DO use MSBuildVersion's
+        // comparator, which treats a version's omitted trailing components as
+        // -1 (see MSBuildVersion::cmp()'s doc comment) -- so a shorter
+        // version string sorts strictly before a longer one, '17' < '17.0.0.0',
+        // rather than comparing equal to it under either == or a relational op.
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' == '17.0.0.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' != '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' >= '17.0.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' <= '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17' > '17.0.0.0'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17' < '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
+        // Same reasoning as '17'/'17.0.0.0' above: == is plain (numeric- or
+        // string-, never version-) comparison, so none of these are equal --
+        // '17.0', '17.0.0.0' and '17.0.0' are all different strings from each
+        // other and from '17', and none of them parses as a plain integer
+        // (they contain '.').
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0' == '17.0.0.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'17.0.0' == '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'17.1' > '17.0.0.0'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'16.9' > '17'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1' < '1.0.0.1'", "", ""));
@@ -968,9 +988,15 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x0F' < '0x10'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'0x10' < '0x0F'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'010' > '9'", "", ""));
-        // Equality comparison: numeric, hexadecimal, Boolean, then string fallback.
+        // Equality comparison: numeric, Boolean, then string fallback -- NOT
+        // MSBuildVersion's zero-padded comparison (see the '17'/'17.0.0.0'
+        // block above in testVcxprojConditions() for why): '0x10' and '16'
+        // are both plain (hex/decimal) integers, so == compares them
+        // numerically and they're equal; '1.0' is not a plain integer (it
+        // contains '.') and is a different string from '1', so == falls back
+        // to string comparison and they're NOT equal.
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' == 'TRUE'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'alpha'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'Beta'", "", ""));
@@ -989,12 +1015,80 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' And 'True'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'true' And 'false'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'false' Or 'TRUE'", "", ""));
-        // Equality comparison: numeric, hexadecimal, Boolean, then string fallback.
+        // Equality comparison: numeric, Boolean, then string fallback -- NOT
+        // MSBuildVersion's zero-padded comparison (see the '17'/'17.0.0.0'
+        // block above in testVcxprojConditions() for why): '0x10' and '16'
+        // are both plain (hex/decimal) integers, so == compares them
+        // numerically and they're equal; '1.0' is not a plain integer (it
+        // contains '.') and is a different string from '1', so == falls back
+        // to string comparison and they're NOT equal.
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'0x10' == '16'", "", ""));
-        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.0' == '1'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'true' == 'TRUE'", "", ""));
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'alpha'", "", ""));
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Alpha' == 'Beta'", "", ""));
+    }
+
+    // Regression coverage for compare()'s == / != previously sharing the
+    // same numeric -> Boolean -> Version -> string cascade as the relational
+    // operators <, >, <=, >=. Real MSBuild documents <, >, <=, >= as usable
+    // only with numeric values -- a dotted, multi-component string isn't a
+    // valid number there, which is exactly why the dedicated
+    // $([MSBuild]::VersionGreaterThan(...)) etc. functions exist -- while ==
+    // and != are documented as ordinary equality/inequality: numeric if both
+    // sides are plain numbers, case-insensitive string otherwise. Before the
+    // fix, == and != additionally fell through to MSBuildVersion's own
+    // comparator when both sides parsed as a dotted version string, and that
+    // comparator's own "==" implementation deliberately treats an omitted
+    // trailing component as zero (1 == 1.0 == 1.0.0) -- correct for the
+    // dedicated VersionEquals() function this codebase also exposes (see
+    // testMSBuildStaticFunctions()'s $([MSBuild]::VersionEquals(...))
+    // coverage), but not something a plain == in an ordinary
+    // Condition="..." attribute should ever do. This meant e.g.
+    // Condition="'$(SomeVersion)' == '1.1.0'" could spuriously match
+    // '$(SomeVersion)'=='1.1', a real vcxproj-authoring hazard given how
+    // often toolset/SDK version properties look exactly like this.
+    void testVcxprojConditionEqualityIsNotVersionComparison() const {
+        // The exact shape of bug report: a shorter and a longer dotted
+        // version string must NOT compare equal under == or != , even though
+        // MSBuildVersion's own zero-padded equality (used by
+        // $([MSBuild]::VersionEquals(...)) -- and, before this fix, leaked
+        // into plain ==) would treat them as the same value.
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.1' == '1.1.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.1' != '1.1.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1' == '1.0'", "", ""));
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1' != '1.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1' == '1.0.0'", "", ""));
+
+        // Relationally (<, >, <=, >=), MSBuildVersion's comparator treats an
+        // omitted trailing component as -1, not 0 (matching .NET's
+        // System.Version semantics), so a shorter version sorts strictly
+        // BEFORE a longer one -- neither "equal" under == nor under the
+        // relational operators either, it is simply less.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.1' < '1.1.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.1' >= '1.1.0'", "", ""));
+
+        // Two identical dotted version strings are still equal under == --
+        // this is ordinary string equality doing its job, not version
+        // comparison; nothing about excluding == from the version-comparison
+        // path should affect the case where both sides are literally the
+        // same text.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'1.1.0' == '1.1.0'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'1.1.0' != '1.1.0'", "", ""));
+
+        // Genuinely plain numbers (no dots) are still compared numerically
+        // under == -- this really is documented MSBuild behavior for ==,
+        // unlike the dotted-version case above, so leading zeros and the
+        // like still numerically match.
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'01' == '1'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'01' != '1'", "", ""));
+
+        // $([MSBuild]::VersionEquals(...)) is a distinct, dedicated function
+        // with its own, deliberately zero-padding, semantics -- unaffected
+        // by any of the above, since it never goes through compare() at all.
+        // See testMSBuildStaticFunctions() for its general coverage; this is
+        // exactly the '1.1'/'1.1.0' pair that a plain == above now rejects.
+        ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionEquals('1.1', '1.1.0'))"));
     }
 
     void testMSBuildStaticFunctions() const {
