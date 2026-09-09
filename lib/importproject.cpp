@@ -3116,8 +3116,27 @@ std::string ImportProject::toAbsoluteExpanded(const std::string &filename, const
 
     const std::string normalized = Path::simplifyPath(filename);
 
-    if (Path::isAbsolute(normalized))
+    // classifyPath(), not the host-dependent Path::isAbsolute(), decides
+    // whether `normalized` is already fully rooted -- see the doc comment
+    // above pathCombineAppend() for why Path::isAbsolute() is avoided
+    // throughout this file: on a non-Windows host it only recognizes a
+    // leading '/', so a Windows drive-absolute path straight out of a
+    // .vcxproj, e.g. "C:/src/foo.cpp", would be misclassified as relative
+    // and joined onto baseDir -- "<baseDir>/C:/src/foo.cpp" -- which is not
+    // what Visual Studio does, and exactly the kind of host-dependent
+    // divergence this emulation exists to avoid. UNC and DriveAbsolute are
+    // the only PathKinds Path::isAbsolute() itself ever recognized as
+    // absolute, even natively on Windows (a bare "\foo" or "C:foo" both
+    // return false from it there too), so restricting to those two here
+    // keeps this in exact agreement with the previous, Windows-native
+    // behaviour -- just no longer host-dependent.
+    switch (classifyPath(normalized)) {
+    case PathKind::UNC:
+    case PathKind::DriveAbsolute:
         return normalized;
+    default:
+        break;
+    }
 
     return Path::simplifyPath(Path::join(baseDir, normalized));
 }
