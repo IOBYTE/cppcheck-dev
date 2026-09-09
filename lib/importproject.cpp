@@ -3607,12 +3607,18 @@ static void applyAdditionalOptions(MetadataMap &metadata)
 // given project does with them -- these are exactly what Visual Studio's own
 // Shared Items projects (.vcxitems) use to write portable Include paths, e.g.
 // <ClCompile Include="$(MSBuildThisFileDirectory)TestClass.cpp" /> (see
-// test/cli/shared-items-project). Everything else is only as safe as this
-// particular project makes it: mConfigInvariantProperties (see its doc
-// comment in importproject.h) is computed per project file by priming every
-// configuration's Properties pass before the real per-configuration passes
-// run, and holds every property name that came out with the same value in
-// all of them.
+// test/cli/shared-items-project). A property this project's own PropertyGroups
+// never touch at all but that resolves to a real OS environment variable is
+// config-invariant too -- it has exactly one value for the whole cppcheck
+// invocation, and MSBuild property evaluation itself falls back to the
+// environment for anything no PropertyGroup sets (PropertyValueExpander::lookup()
+// already does this; the check here just has to agree, or expandMSBuildVariables()
+// below would never even be called to do it). Everything else is only as
+// safe as this particular project makes it: mConfigInvariantProperties (see
+// its doc comment in importproject.h) is computed per project file by
+// priming every configuration's Properties pass before the real
+// per-configuration passes run, and holds every property name that came out
+// with the same value in all of them.
 static const std::set<std::string> &invariantItemPathProperties() {
     static const std::set<std::string> props = {
         "MSBuildThisFileDirectory", "MSBuildThisFileFullPath", "MSBuildThisFile",
@@ -3626,12 +3632,15 @@ static const std::set<std::string> &invariantItemPathProperties() {
 
 // Returns whether every $(...) reference in `spec` is a bare reference (no
 // .Method(...) chain, no $([Class]::...) static function) to a property that
-// is always config-invariant (invariantItemPathProperties() above) or that
+// is always config-invariant (invariantItemPathProperties() above), that
 // this project's configInvariant set says is config-invariant here (every
 // configuration of THIS project resolved it to the same value -- see
-// mConfigInvariantProperties's doc comment). A false result means `spec`
-// depends on something Visual Studio's C++ project system does not reliably
-// resolve in a project item path -- expandItemSpec() must not expand it.
+// mConfigInvariantProperties's doc comment), or that resolves via a real OS
+// environment variable of the same name (see this function's own doc
+// comment above). A false result means `spec` depends on something Visual
+// Studio's C++ project system does not reliably resolve in a project item
+// path -- expandItemSpec() must not expand it, though (see its own comment)
+// that does not mean discarding the item.
 static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std::set<std::string> &configInvariant) {
     std::size_t pos = 0;
     while ((pos = spec.find("$(", pos)) != std::string::npos) {
@@ -3640,7 +3649,8 @@ static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std
         while (i < spec.size() && (std::isalnum(static_cast<unsigned char>(spec[i])) || spec[i] == '_'))
             name += spec[i++];
         if (name.empty() || i >= spec.size() || spec[i] != ')' ||
-            (!invariantItemPathProperties().count(name) && !configInvariant.count(name)))
+            (!invariantItemPathProperties().count(name) && !configInvariant.count(name) &&
+             std::getenv(name.c_str()) == nullptr))
             return false;
         pos = i + 1;
     }
@@ -3657,20 +3667,33 @@ std::pair<std::string, std::string> ImportProject::expandItemSpec(const std::str
     std::string expandedSpec = spec;
     if (hasOnlyInvariantItemPathVariables(spec, mConfigInvariantProperties)) {
         // Every $(...) reference here is either one of Visual Studio's own
-        // "this file"/"this project" properties, or a property this project
-        // resolves to the same value in every configuration -- either way,
-        // expanding it here matches what the IDE itself does (see
-        // invariantItemPathProperties() and mConfigInvariantProperties).
+        // "this file"/"this project" properties, a property this project
+        // resolves to the same value in every configuration, or a real
+        // environment variable -- all config-invariant, so expanding it here
+        // matches what the IDE itself does (see invariantItemPathProperties()
+        // and mConfigInvariantProperties).
         expandMSBuildVariables(expandedSpec, properties);
     } else if (spec.find("$(") != std::string::npos) {
         // Some other macro reference, one whose value could differ by
-        // configuration in this project -- Visual Studio's C++ project system
-        // does not support that in a project item path (see
-        // invariantItemPathProperties()'s doc comment). Treat it the same way
-        // as the wildcard/glob rejection below: unsupported by the IDE, so
-        // don't act as if it were expanded.
-        addDebug("Macro in item path not supported by Visual Studio IDE layout, skipped: '" + spec + "'");
-        return std::make_pair(std::string(), std::string());
+        // configuration in this project and that no environment variable
+        // resolves either -- Visual Studio's C++ project system does not
+        // support that in a project item path (see
+        // invariantItemPathProperties()'s doc comment), so it is not
+        // expanded here.
+        //
+        // That does NOT mean discarding the item, unlike the wildcard/glob
+        // and semicolon-list cases below: a silently vanished ClCompile item
+        // leaves the user with no idea their file went unchecked, short of
+        // rerunning with --debug to see this addDebug() line. Instead,
+        // `expandedSpec` is left as-is (the literal, unexpanded "$(...)"
+        // text stays in it) and falls through the rest of this function to
+        // become the item's resolved path below. That literal path can never
+        // exist on disk, so when cppcheck later tries to actually open it,
+        // simplecpp's normal FileStream failure path reports it exactly like
+        // any other missing source file -- a visible "File is missing: ..."
+        // error citing this literal, still-macro'd path -- which also tells
+        // the user precisely which macro it was that didn't resolve.
+        addDebug("Macro in item path not supported by Visual Studio IDE layout, left unexpanded: '" + spec + "'");
     }
 
     if (expandedSpec.find(';') != std::string::npos) {

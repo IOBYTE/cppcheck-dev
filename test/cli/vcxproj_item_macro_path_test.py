@@ -25,9 +25,18 @@
 # Release|x64) -- exactly the case Visual Studio can't reliably resolve, since
 # a single Solution Explorer file list can't show two different files
 # depending on which configuration happens to be active. Expanding $(SomeDir)
-# here would resolve to a real file on disk in either configuration -- but
-# real Visual Studio does not expand it, so the item stays unresolved in both
-# and the project has no valid source files at all.
+# here would resolve to a real file that genuinely exists on disk in either
+# configuration -- but real Visual Studio does not expand it, so cppcheck
+# must not either.
+#
+# Critically, "must not expand it" does not mean the item silently vanishes:
+# a user whose real project has a file like this would have no way to know
+# it went unchecked. So the item is still kept, under its literal,
+# unexpanded path ("vcxproj_item_macro_path/$(SomeDir)/foo.cpp") -- which
+# can never exist on disk -- and cppcheck reports it exactly like any other
+# missing source file, a normal, visible "File is missing: ..." error that
+# also names the exact unresolved macro path, not just an addDebug() trace
+# nobody but a --debug run would ever see.
 
 import os
 
@@ -40,12 +49,21 @@ def test_vcxproj_item_macro_path():
     args = [
         '--project=vcxproj_item_macro_path/vcxproj_item_macro_path.vcxproj',
         '--no-cppcheck-build-dir',
-        '--dump'
     ]
-    ret, stdout, _ = cppcheck(args, cwd=__script_dir)
+    ret, stdout, stderr = cppcheck(args, cwd=__script_dir)
+    assert ret == 0, stdout
 
-    # $(SomeDir) must NOT be expanded -- the ClCompile item stays unresolved,
-    # so the project ends up with no valid source files at all, exactly like
-    # any other project whose only item cppcheck cannot resolve.
-    assert ret != 0, stdout
-    assert stdout == 'cppcheck: error: no C or C++ source files found.\n', stdout
+    normalized_stdout = stdout.replace('\\', '/')
+    normalized_stderr = stderr.replace('\\', '/')
+    literal_path = 'vcxproj_item_macro_path/$(SomeDir)/foo.cpp'
+
+    # $(SomeDir) must NOT be expanded -- Visual Studio can't reliably resolve
+    # it either, since it genuinely differs between configurations -- but the
+    # item must still be checked (and fail to be found) under its literal,
+    # unexpanded path, in both configurations, rather than disappearing.
+    assert ('Checking %s Debug|x64...' % literal_path) in normalized_stdout, stdout
+    assert ('Checking %s Release|x64...' % literal_path) in normalized_stdout, stdout
+
+    # Same literal (nonexistent) path in both configurations -- cppcheck
+    # dedups the identical diagnostic, so it's reported exactly once.
+    assert normalized_stderr.count('%s:0:0: error: File is missing: %s [missingFile]' % (literal_path, literal_path)) == 1, stderr
