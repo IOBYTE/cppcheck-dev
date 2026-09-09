@@ -4412,6 +4412,7 @@ ImportProject::ImportResult ImportProject::processImport(const std::string &file
         std::vector<std::string> matches;
         for (const std::string &candidate : listDirectoryFiles(dirPart)) {
             if (matchesWildcardName(candidate, patternPart))
+                // cppcheck-suppress useStlAlgorithm
                 matches.push_back(candidate);
         }
         std::sort(matches.begin(), matches.end());
