@@ -169,37 +169,43 @@ void ImportProject::parseArgs(FileSettings &fs, const std::vector<std::string> &
             })) {
                 fs.includePaths.push_back(std::move(optResult.first));
             }
-            if (optResult.second) i++; // Safely advance only if the separate lookahead was consumed
+            if (optResult.second)
+                i++; // Safely advance only if the separate lookahead was consumed
             continue;
         }
 
         if (!(optResult = getOptArg({ "-isystem" }, i)).first.empty()) {
             fs.systemIncludePaths.push_back(std::move(optResult.first));
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
         if (!(optResult = getOptArg({ "-include", "/FI", "-FI" }, i)).first.empty()) {
             fs.forcedIncludes.push_back(std::move(optResult.first));
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
         if (!(optResult = getOptArg({ "-D", "/D" }, i)).first.empty()) {
             defs += optResult.first + ";";
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
         if (!(optResult = getOptArg({ "-U", "/U" }, i)).first.empty()) {
             fs.undefs.insert(std::move(optResult.first));
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
         if (!(optResult = getOptArg({ "-std=", "/std:" }, i)).first.empty()) {
             fs.standard = std::move(optResult.first);
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
@@ -212,20 +218,23 @@ void ImportProject::parseArgs(FileSettings &fs, const std::vector<std::string> &
                 defs += "__pie__;";
             else if (optResult.first == "PIE")
                 defs += "__PIE__;";
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
 
         if (!(optResult = getOptArg({ "-m" }, i)).first.empty()) {
             if (optResult.first == "unicode")
                 defs += "UNICODE;";
-            if (optResult.second) i++;
+            if (optResult.second)
+                i++;
             continue;
         }
     }
 
     fsSetDefines(fs, std::move(defs));
 }
+
 void ImportProject::ignorePaths(const std::vector<std::string> &ipaths, bool debug)
 {
     PathMatch matcher(ipaths, Path::getCurrentPath());
@@ -620,9 +629,7 @@ static bool isRelative(const std::string &path) {
 //                           matching .NET Path.Combine behaviour), returns true
 //    DriveRelative  C:foo -> full reset (Path.IsPathRooted = true for "C:foo"), returns true
 //    Relative / Empty     -> plain join, returns true
-static bool pathCombineAppend(std::string &result, const std::string &seg,
-                              bool checkIsAbsolute = false)
-{
+static bool pathCombineAppend(std::string &result, const std::string &seg, bool checkIsAbsolute = false) {
     if (seg.empty())
         return true;
     switch (classifyPath(seg)) {
@@ -3303,9 +3310,8 @@ void ImportProject::fsSetIncludePaths(FileSettings &fs, const std::string &basep
             s = Path::simplifyPath(basepath + s);
         } else if (!simplifyPathWithVariables(s, properties)) {
             // A macro in this entry didn't resolve (simplifyPathWithVariables()
-            // already left `s` with the literal, unexpanded "$(...)" text in it --
-            // see its doc comment). Unlike the old ClCompile item-path behavior this
-            // does NOT silently drop the entry: a directory that can never exist is
+            // already left `s` with the literal, unexpanded "$(...)" text in it
+            // This does NOT silently drop the entry: a directory that can never exist is
             // harmless to keep in includePaths (nothing will ever match it), but
             // dropping it silently left the user with no way to find out why headers
             // that should have been under it went unfound -- addDebug() alone isn't
@@ -3976,6 +3982,13 @@ ImportProject::ImportResult ImportProject::processCompile(const tinyxml2::XMLEle
     return ImportResult::Ok;
 }
 
+// Looks up `name` in `properties`, returning its value or an empty string if absent
+static std::string propertyOrEmpty(const PropertiesMap &properties, const std::string &name)
+{
+    const auto it = properties.find(name);
+    return it != properties.end() ? it->second : std::string();
+}
+
 ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::XMLElement *node,
                                                                 const std::string &projectDir,
                                                                 PropertiesMap &properties,
@@ -4036,8 +4049,7 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
         };
 
         if (filenameIs("Microsoft.Cpp.targets")) {
-            const auto beforeIt = properties.find("ForceImportBeforeCppTargets");
-            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportBeforeCppTargets"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             // Microsoft.Common.targets (imported by Microsoft.Cpp.targets) sets
@@ -4067,16 +4079,14 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                                        properties, metadata, compileList, projectConfigurationList, importStack, phase);
             }
 
-            const auto afterIt = properties.find("ForceImportAfterCppTargets");
-            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportAfterCppTargets"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
         }
 
         if (filenameIs("Microsoft.Cpp.Default.props")) {
-            const auto beforeIt = properties.find("ForceImportBeforeCppDefaultProps");
-            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportBeforeCppDefaultProps"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             // Emulate key side-effects here, including the Directory.Build.props import that
@@ -4131,8 +4141,7 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                 }
             }
 
-            const auto afterIt = properties.find("ForceImportAfterCppDefaultProps");
-            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportAfterCppDefaultProps"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
@@ -4142,8 +4151,7 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
             // ForceImportBeforeCppProps: honour any value set before Microsoft.Cpp.props
             // is processed (e.g. by the vcxproj itself or by Directory.Build.props, which
             // was already imported via the Microsoft.Cpp.Default.props handler above).
-            const auto beforeIt = properties.find("ForceImportBeforeCppProps");
-            attemptSyntheticImport(beforeIt != properties.end() ? beforeIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportBeforeCppProps"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             if (phase == EvalPhase::Properties) {
@@ -4167,8 +4175,7 @@ ImportProject::ImportResult ImportProject::processImportProject(const tinyxml2::
                 properties.emplace("GeneratedFilesDir", "Generated Files/");
             }
 
-            const auto afterIt = properties.find("ForceImportAfterCppProps");
-            attemptSyntheticImport(afterIt != properties.end() ? afterIt->second : std::string(),
+            attemptSyntheticImport(propertyOrEmpty(properties, "ForceImportAfterCppProps"),
                                    properties, metadata, compileList, projectConfigurationList, importStack, phase);
 
             return ImportResult::Ok;
@@ -4375,7 +4382,7 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
                         applyClCompileRemove(item, baseDir, properties, compileList);
                 }
             }
-        } else if (std::strcmp(node->Name() ? node->Name() : "", "ImportGroup") == 0) {
+        } else if (hasElementName(node, "ImportGroup")) {
             // An <ImportGroup>'s own Condition gates every import inside it, so it is an
             // import-graph branch point exactly like an individual <Import> and must be
             // decided/replayed the same way (see importGraphDecision()) -- ImportGroup
@@ -4385,7 +4392,7 @@ ImportProject::ImportResult ImportProject::processElementChildren(const tinyxml2
                 const ImportResult importResult = processImportGroup(node, baseDir, properties, metadata, compileList, projectConfigurationList, importStack, phase);
                 result = std::max(result, importResult);
             }
-        } else if (std::strcmp(node->Name() ? node->Name() : "", "Choose") == 0) {
+        } else if (hasElementName(node, "Choose")) {
             // <Choose>'s branch selection is an import-graph branch point exactly
             // like <Import>/<ImportGroup> -- see processChoose() and
             // importGraphChooseDecision() for why it must be decided once
@@ -4977,72 +4984,70 @@ bool ImportProject::importVcxproj(const std::string &filename,
             // Without these, standard-library and Windows SDK headers (<yvals.h>,
             // <crtdefs.h>) use generic fallbacks, fail to compile, or misidentify
             // the supported language standard.
-            {
-                std::string mscVer = "1950";      // VS 2026 fallback
-                std::string mscFullVer = "195000000";
+            std::string mscVer = "1950";      // VS 2026 fallback
+            std::string mscFullVer = "195000000";
 
-                // Prefer item-level override, then project property, then DefaultPlatformToolset.
-                std::string toolset = compile.get("PlatformToolset");
-                if (toolset.empty()) {
-                    const auto tsIt = properties.find("PlatformToolset");
-                    if (tsIt != properties.end())
-                        toolset = tsIt->second;
-                    else {
-                        const auto defIt = properties.find("DefaultPlatformToolset");
-                        if (defIt != properties.end())
-                            toolset = defIt->second;
-                    }
+            // Prefer item-level override, then project property, then DefaultPlatformToolset.
+            std::string toolset = compile.get("PlatformToolset");
+            if (toolset.empty()) {
+                const auto tsIt = properties.find("PlatformToolset");
+                if (tsIt != properties.end())
+                    toolset = tsIt->second;
+                else {
+                    const auto defIt = properties.find("DefaultPlatformToolset");
+                    if (defIt != properties.end())
+                        toolset = defIt->second;
                 }
-
-                if (caseInsensitiveStringCompare(toolset, "v145") == 0) {         // VS 2026
-                    mscVer = "1950";
-                    mscFullVer = "195000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v144") == 0) { // VS 2025
-                    mscVer = "1940";
-                    mscFullVer = "194000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v143") == 0) { // VS 2022
-                    mscVer = "1930";
-                    mscFullVer = "193000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v142") == 0) { // VS 2019
-                    mscVer = "1920";
-                    mscFullVer = "192000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v141") == 0) { // VS 2017
-                    mscVer = "1910";
-                    mscFullVer = "191000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v140") == 0) { // VS 2015
-                    mscVer = "1900";
-                    mscFullVer = "190000000";
-                } else if (caseInsensitiveStringCompare(toolset, "v14") == 0) {
-                    try {
-                        const int sub = std::stoi(toolset.substr(3));
-                        mscVer = std::to_string(1900 + (sub * 10));
-                        mscFullVer = mscVer + "00000";
-                    } catch (...) {}
-                } else {
-                    // Unknown or absent toolset: derive from VisualStudioVersion.
-                    const auto vsIt = properties.find("VisualStudioVersion");
-                    if (vsIt != properties.end()) {
-                        try {
-                            const double vsVer = std::stod(vsIt->second);
-                            if (vsVer >= 19.0) {
-                                // future VS: keep the default (1940) as a safe floor
-                            } else if (vsVer >= 18.0) { // VS 2026
-                                mscVer = "1950"; mscFullVer = "195000000";
-                            } else if (vsVer >= 17.0) { // VS 2025
-                                mscVer = "1940"; mscFullVer = "194000000";
-                            } else if (vsVer >= 16.0) { // VS 2022
-                                mscVer = "1930"; mscFullVer = "193000000";
-                            } else if (vsVer >= 15.0) { // VS 2019
-                                mscVer = "1920"; mscFullVer = "192000000";
-                            } else if (vsVer >= 14.0) { // VS 2017
-                                mscVer = "1910"; mscFullVer = "191000000";
-                            }
-                        } catch (...) {}
-                    }
-                }
-
-                fs.defines += ";_MSC_VER=" + mscVer + ";_MSC_FULL_VER=" + mscFullVer;
             }
+
+            if (caseInsensitiveStringCompare(toolset, "v145") == 0) {         // VS 2026
+                mscVer = "1950";
+                mscFullVer = "195000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v144") == 0) { // VS 2025
+                mscVer = "1940";
+                mscFullVer = "194000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v143") == 0) { // VS 2022
+                mscVer = "1930";
+                mscFullVer = "193000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v142") == 0) { // VS 2019
+                mscVer = "1920";
+                mscFullVer = "192000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v141") == 0) { // VS 2017
+                mscVer = "1910";
+                mscFullVer = "191000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v140") == 0) { // VS 2015
+                mscVer = "1900";
+                mscFullVer = "190000000";
+            } else if (caseInsensitiveStringCompare(toolset, "v14") == 0) {
+                try {
+                    const int sub = std::stoi(toolset.substr(3));
+                    mscVer = std::to_string(1900 + (sub * 10));
+                    mscFullVer = mscVer + "00000";
+                } catch (...) {}
+            } else {
+                // Unknown or absent toolset: derive from VisualStudioVersion.
+                const auto vsIt = properties.find("VisualStudioVersion");
+                if (vsIt != properties.end()) {
+                    try {
+                        const double vsVer = std::stod(vsIt->second);
+                        if (vsVer >= 19.0) {
+                            // future VS: keep the default (1940) as a safe floor
+                        } else if (vsVer >= 18.0) { // VS 2026
+                            mscVer = "1950"; mscFullVer = "195000000";
+                        } else if (vsVer >= 17.0) { // VS 2025
+                            mscVer = "1940"; mscFullVer = "194000000";
+                        } else if (vsVer >= 16.0) { // VS 2022
+                            mscVer = "1930"; mscFullVer = "193000000";
+                        } else if (vsVer >= 15.0) { // VS 2019
+                            mscVer = "1920"; mscFullVer = "192000000";
+                        } else if (vsVer >= 14.0) { // VS 2017
+                            mscVer = "1910"; mscFullVer = "191000000";
+                        }
+                    } catch (...) {}
+                }
+            }
+
+            fs.defines += ";_MSC_VER=" + mscVer + ";_MSC_FULL_VER=" + mscFullVer;
 
             // _MSVC_LANG mirrors the C++ standard flag.  MSVC only defines this for
             // C++ translation units; C files do not get it (even with /TC).
@@ -5171,8 +5176,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
                 defines = std::move(filtered);
             }
             fsSetDefines(fs, defines);
-            const auto includePathIt = properties.find("IncludePath");
-            fsSetIncludePaths(fs, projectDir, toStringList(includePathIt != properties.end() ? includePathIt->second : std::string()), properties);
+            fsSetIncludePaths(fs, projectDir, toStringList(propertyOrEmpty(properties, "IncludePath")), properties);
 
             std::string rawAdditionalIncludes = compile.get("AdditionalIncludeDirectories");
             expandMSBuildVariables(rawAdditionalIncludes, properties); // Pre-expand so toStringList splits them cleanly!
