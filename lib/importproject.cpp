@@ -4823,6 +4823,7 @@ bool ImportProject::importVcxproj(const std::string &filename,
         std::set<std::string, cppcheck::stricmp> allPropertyNames;
         for (const auto &configProperties : perConfigProperties) {
             for (const auto &prop : configProperties)
+                // cppcheck-suppress useStlAlgorithm
                 allPropertyNames.insert(prop.first);
         }
         std::map<std::string, std::set<std::string>, cppcheck::stricmp> valuesByProperty;
