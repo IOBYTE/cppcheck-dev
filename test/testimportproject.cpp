@@ -26,6 +26,7 @@
 #include "suppressions.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <list>
 #include <sstream>
 #include <stdexcept>
@@ -92,6 +93,7 @@ private:
         TEST_CASE(testCollectArgs7);
         TEST_CASE(testVcxprojConditions);
         TEST_CASE(testVcxprojConditionEqualityIsNotVersionComparison);
+        TEST_CASE(testPropertyNameAllowsHyphen);
         TEST_CASE(testMSBuildStaticFunctions);
         TEST_CASE(testVcxitemsPathResolution);
         TEST_CASE(testMissingChildImportNonFatal); // missing child imports must not abort the project
@@ -1089,6 +1091,71 @@ private:
         // See testMSBuildStaticFunctions() for its general coverage; this is
         // exactly the '1.1'/'1.1.0' pair that a plain == above now rejects.
         ASSERT_EQUALS("True", cppcheck::testing::expandMSBuildExpression("$([MSBuild]::VersionEquals('1.1', '1.1.0'))"));
+    }
+
+    // Regression coverage for property-name identifier parsing rejecting '-'.
+    // Microsoft documents a valid MSBuild property name as
+    // [A-Za-z_][A-Za-z0-9_-]* -- '-' IS allowed after the first character,
+    // e.g. <My-Property>foo</My-Property> referenced as $(My-Property) -- but
+    // PropertyValueExpander::parseIdentifier() (used by expandMSBuildVariables(),
+    // the general $(...) expansion path), ConditionParser's property-name
+    // parsing (used by $(...) inside a Condition="..."), and
+    // hasOnlyInvariantItemPathVariables()'s inline scanner (used for ClCompile
+    // item Include/Update/Remove paths, see vcxproj_item_macro_path_hyphen_test.py
+    // for CLI-level coverage of that one) all previously stopped at the first
+    // '-', silently truncating the name -- so $(My-Property) was parsed as a
+    // reference to a property literally named "My" followed by the literal
+    // text "-Property)", which (barring an actual property named exactly
+    // "My") just left the whole expression unexpanded, rather than resolving
+    // "My-Property" as one property name the way real MSBuild does. Method
+    // and member names are NOT affected -- MSBuild's own grammar restricts
+    // those to [A-Za-z_][A-Za-z0-9_]* with no '-' (see
+    // ConditionParser::parseMethodName()'s doc comment and the inline method
+    // scans in PropertyValueExpander::tryParseExpr()) -- so this test also
+    // confirms a hyphen right after a '.' in a method position is correctly
+    // NOT consumed as part of the method name.
+    //
+    // expandMSBuildExpression()/evaluateVcxprojCondition() (the testing hooks
+    // used here) only let a caller set Configuration/Platform in the
+    // properties map directly, so an OS environment variable -- the other
+    // source PropertyValueExpander::lookup() and ConditionParser::getPropertyValue()
+    // already fall back to for any name not in the properties map -- is the
+    // only way to inject an arbitrarily-named property through them.
+    void testPropertyNameAllowsHyphen() const {
+        const char *const envName = "CppcheckTest-Hyphen-Prop";
+#ifdef _WIN32
+        _putenv_s(envName, "hyphen-value");
+#else
+        setenv(envName, "hyphen-value", 1);
+#endif
+
+        // General property expansion (expandMSBuildVariables(), via
+        // PropertyValueExpander::parseIdentifier()).
+        ASSERT_EQUALS("hyphen-value", cppcheck::testing::expandMSBuildExpression("$(CppcheckTest-Hyphen-Prop)"));
+        ASSERT_EQUALS("prefix-hyphen-value-suffix",
+                      cppcheck::testing::expandMSBuildExpression("prefix-$(CppcheckTest-Hyphen-Prop)-suffix"));
+
+        // Condition evaluation (ConditionParser::parsePropertyName(), via
+        // parsePropertyExpression()).
+        ASSERT(cppcheck::testing::evaluateVcxprojCondition("'$(CppcheckTest-Hyphen-Prop)' == 'hyphen-value'", "", ""));
+        ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'$(CppcheckTest-Hyphen-Prop)' == 'wrong-value'", "", ""));
+
+        // A hyphen is still correctly rejected in a METHOD name -- the
+        // property name parses in full ("CppcheckTest-Hyphen-Prop"), but the
+        // method-name scan then stops at the '-' in ".To-Upper", leaving
+        // "To" as an unrecognized no-paren property access (passing `value`
+        // through unchanged, exactly like an unrelated unknown property
+        // accessor would) and "-Upper)" behind as literal, unconsumed text
+        // that the surrounding expansion then copies through verbatim --
+        // rather than treating "-" as part of the method name and matching
+        // some (nonexistent) "To-Upper" method.
+        ASSERT_EQUALS("hyphen-value-Upper)", cppcheck::testing::expandMSBuildExpression("$(CppcheckTest-Hyphen-Prop.To-Upper)"));
+
+#ifdef _WIN32
+        _putenv_s(envName, "");
+#else
+        unsetenv(envName);
+#endif
     }
 
     void testMSBuildStaticFunctions() const {

@@ -1538,9 +1538,15 @@ struct ImportProject::PropertyValueExpander {
         return env ? env : std::string();
     }
 
-    // Parses an identifier, handling nested $(...) within the name.
-    // MSBuild property/metadata/function names are [A-Za-z_][A-Za-z0-9_]*;
-    // '-' is NOT a valid identifier character and must not be consumed here.
+    // Parses a PROPERTY name, handling nested $(...) within the name.
+    // MSBuild property names are [A-Za-z_][A-Za-z0-9_-]* -- unlike method
+    // names (see e.g. the inline scans in tryParseExpr() for '.Method(...)'
+    // chains, and parseMSBuildStaticRef()'s "[ClassName]::Member" scan,
+    // neither of which this function is used for), a property name MAY
+    // contain '-' after the first character, e.g. <My-Property>foo</My-Property>
+    // referenced as $(My-Property). This is the sole call site that reads
+    // the identifier directly after '$(' (see tryParseExpr()), so it's safe
+    // for this one to accept '-' without affecting method-name parsing.
     std::string parseIdentifier() {
         std::string result;
         while (mPos < mStr.size()) {
@@ -1549,7 +1555,7 @@ struct ImportProject::PropertyValueExpander {
                 continue;
             }
             const auto c = static_cast<unsigned char>(mStr[mPos]);
-            if (!std::isalnum(c) && c != '_')
+            if (!std::isalnum(c) && c != '_' && c != '-')
                 break;
             result += mStr[mPos++];
         }
@@ -2565,7 +2571,12 @@ private:
         return end != begin && *end == '\0';
     }
 
-    std::string parseIdentifier() {
+    // Parses a METHOD or chained-member name (e.g. the "Method" in
+    // $(Foo.Method(...)) or the "Member" in $([Class]::Member.Method(...))).
+    // MSBuild method/member names are [A-Za-z_][A-Za-z0-9_]* -- '-' is not
+    // valid here. See parsePropertyName() below for the different rule that
+    // applies to a PROPERTY name instead; do not use this function for one.
+    std::string parseMethodName() {
         skipWhitespace();
         std::string result;
         while (mPos < mCondition.size()) {
@@ -2574,8 +2585,31 @@ private:
                 continue;
             }
             const auto c = static_cast<unsigned char>(mCondition[mPos]);
-            // MSBuild identifiers are [A-Za-z_][A-Za-z0-9_]* -- '-' is not valid.
             if (!std::isalnum(c) && c != '_')
+                break;
+            result += mCondition[mPos++];
+        }
+        if (result.empty())
+            throw std::runtime_error("Expected identifier in condition '" + mCondition + "'");
+        return result;
+    }
+
+    // Parses a PROPERTY name -- the "Name" in $(Name) or $(Name.Method(...)).
+    // MSBuild property names are [A-Za-z_][A-Za-z0-9_-]*: unlike a method or
+    // member name (parseMethodName() above), '-' IS valid here after the
+    // first character, e.g. <My-Property>foo</My-Property> referenced as
+    // $(My-Property). Use this only for the property-name position, never
+    // for a method/member name -- see parseMethodName()'s own doc comment.
+    std::string parsePropertyName() {
+        skipWhitespace();
+        std::string result;
+        while (mPos < mCondition.size()) {
+            if (mCondition.compare(mPos, 2, "$(") == 0) {
+                result += parsePropertyExpression();
+                continue;
+            }
+            const auto c = static_cast<unsigned char>(mCondition[mPos]);
+            if (!std::isalnum(c) && c != '_' && c != '-')
                 break;
             result += mCondition[mPos++];
         }
@@ -2610,7 +2644,7 @@ private:
                 skipWhitespace();
                 if (!match("."))
                     break;
-                const std::string chainMethod = parseIdentifier();
+                const std::string chainMethod = parseMethodName();
                 if (!match("(")) {
                     if (mEvaluate) {
                         if (caseInsensitiveStringCompare(chainMethod, "Length") == 0)
@@ -2640,14 +2674,14 @@ private:
             return value;
         }
 
-        std::string value = getPropertyValue(parseIdentifier());
+        std::string value = getPropertyValue(parsePropertyName());
 
         while (true) {
             skipWhitespace();
             if (!match("."))
                 break;
 
-            const std::string method = parseIdentifier();
+            const std::string method = parseMethodName();
             if (!match("(")) {
                 // Property access without parentheses (e.g. $(Foo.Length), $(Foo.Name)).
                 if (mEvaluate) {
@@ -3720,7 +3754,13 @@ static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std
     while ((pos = spec.find("$(", pos)) != std::string::npos) {
         std::size_t i = pos + 2;
         std::string name;
-        while (i < spec.size() && (std::isalnum(static_cast<unsigned char>(spec[i])) || spec[i] == '_'))
+        // MSBuild property names are [A-Za-z_][A-Za-z0-9_-]* -- '-' is valid
+        // after the first character (see PropertyValueExpander::parseIdentifier()'s
+        // doc comment) -- and this scan is only ever used for a bare $(Name)
+        // property reference (the caller requires the very next character to
+        // be ')', never '.' or '('), so there's no method name to worry about
+        // conflating this with here.
+        while (i < spec.size() && (std::isalnum(static_cast<unsigned char>(spec[i])) || spec[i] == '_' || spec[i] == '-'))
             name += spec[i++];
         if (name.empty() || i >= spec.size() || spec[i] != ')' ||
             (!invariantItemPathProperties().count(name) && !configInvariant.count(name) &&
