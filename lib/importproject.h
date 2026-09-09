@@ -270,7 +270,6 @@ private:
     bool evalCondition(const std::string &condition, const PropertiesMap &properties);
     bool conditionIsTrue(const tinyxml2::XMLElement *node, const PropertiesMap &properties);
     bool hasName(const tinyxml2::XMLElement *node, const char *nodeName, const PropertiesMap &properties);
-    bool hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties);
     bool hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties);
     bool hasNameAndNotLabel(const tinyxml2::XMLElement * node, const char *nodeName, const char *nodeAttr, const PropertiesMap & properties);
     // Decide (Properties pass) or replay (ItemDefs/Items pass) whether one import-graph

@@ -2847,14 +2847,6 @@ bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeNa
     return conditionIsTrue(node, properties);
 }
 
-bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
-    const char *name = node->Name();
-    const char *attr = node->Attribute(attrName);
-    if (!name || !attr || std::strcmp(nodeName, name) != 0)
-        return false;
-    return conditionIsTrue(node, properties);
-}
-
 bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
     const char *name = node->Name();
     const char *label = node->Attribute("Label");
@@ -4382,8 +4374,10 @@ ImportProject::ImportResult ImportProject::processImport(const std::string &file
         const std::string dirPart = (lastSlash != std::string::npos) ? filename.substr(0, lastSlash) : std::string();
         std::vector<std::string> matches;
         for (const std::string &candidate : listDirectoryFiles(dirPart)) {
-            if (matchesWildcardName(candidate, patternPart))
+            if (matchesWildcardName(candidate, patternPart)) {
+                // cppcheck-suppress useStlAlgorithm
                 matches.push_back(candidate);
+            }
         }
         std::sort(matches.begin(), matches.end());
         ImportResult result = ImportResult::Ok;
