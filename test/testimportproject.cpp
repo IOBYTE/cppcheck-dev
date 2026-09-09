@@ -98,6 +98,7 @@ private:
         TEST_CASE(testVcxitemsPathResolution);
         TEST_CASE(testMissingChildImportNonFatal); // missing child imports must not abort the project
         TEST_CASE(testCurrentToolsVersionFromProps); // "Current" keyword uses VisualStudioVersion property
+        TEST_CASE(testMetadataSelfReferenceCaseInsensitive);
     }
 
     void setDefines() const {
@@ -1409,6 +1410,84 @@ private:
         ASSERT(cppcheck::testing::evaluateVcxprojCondition("'Current' < '19.0'", "Debug", "Win32"));
         // "Current" > "19.0" -> {18,0} > {19,0} -> false
         ASSERT(!cppcheck::testing::evaluateVcxprojCondition("'Current' > '19.0'", "Debug", "Win32"));
+    }
+
+    void testMetadataSelfReferenceCaseInsensitive() const {
+        // MSBuild item metadata names are case-insensitive (MetadataMap already
+        // uses cppcheck::stricmp for exactly this reason). Some .vcxproj/.props
+        // files use property-style accumulation in an ItemDefinitionGroup (e.g.
+        // <PreprocessorDefinitions>$(PreprocessorDefinitions);EXTRA</PreprocessorDefinitions>)
+        // instead of the %(...) item-metadata-reference syntax -- addMetadata()
+        // handles that "$(eName) self-reference" idiom by substituting in the
+        // metadata value accumulated so far. That substitution used to go through
+        // the plain, case-sensitive findAndReplace() instead of
+        // findAndReplaceCaseInsensitive() (used everywhere else in this file for
+        // exactly this kind of property/metadata name comparison), so a
+        // self-reference spelled with different casing than the element's own
+        // tag name -- e.g. $(preprocessordefinitions) inside a
+        // <PreprocessorDefinitions> element -- was not recognized and was left
+        // in the output as literal, unresolved macro text instead of being
+        // replaced by the value accumulated from the preceding
+        // ItemDefinitionGroup.
+        //
+        // Two sequential ItemDefinitionGroup blocks exercise this: the first
+        // establishes the base value; the second references it back via
+        // $(preprocessordefinitions) in a different case than the
+        // <PreprocessorDefinitions> tag itself.
+
+        const ScopedFile mainCpp("testcasemeta_main.cpp", "");
+        const ScopedFile vcxproj(
+            "testcasemeta.vcxproj",
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<Project DefaultTargets=\"Build\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n"
+            "  <ItemGroup Label=\"ProjectConfigurations\">\n"
+            "    <ProjectConfiguration Include=\"Debug|Win32\">\n"
+            "      <Configuration>Debug</Configuration>\n"
+            "      <Platform>Win32</Platform>\n"
+            "    </ProjectConfiguration>\n"
+            "  </ItemGroup>\n"
+            "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|Win32'\" Label=\"Configuration\">\n"
+            "    <ConfigurationType>Application</ConfigurationType>\n"
+            "    <PlatformToolset>v143</PlatformToolset>\n"
+            "  </PropertyGroup>\n"
+            "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|Win32'\">\n"
+            "    <ClCompile>\n"
+            "      <PreprocessorDefinitions>BASE_DEFINE</PreprocessorDefinitions>\n"
+            "    </ClCompile>\n"
+            "  </ItemDefinitionGroup>\n"
+            "  <!-- Self-reference spelled in a different case than the element's own\n"
+            "       tag name -- real MSBuild (case-insensitive metadata names) still\n"
+            "       resolves this to the value accumulated by the ItemDefinitionGroup\n"
+            "       above (\"BASE_DEFINE\"). -->\n"
+            "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|Win32'\">\n"
+            "    <ClCompile>\n"
+            "      <PreprocessorDefinitions>$(preprocessordefinitions);EXTRA_DEFINE</PreprocessorDefinitions>\n"
+            "    </ClCompile>\n"
+            "  </ItemDefinitionGroup>\n"
+            "  <ItemGroup>\n"
+            "    <ClCompile Include=\"testcasemeta_main.cpp\" />\n"
+            "  </ItemGroup>\n"
+            "</Project>\n");
+
+        ImportProject project;
+        const ImportProject::Type result = project.import(vcxproj.path());
+        ASSERT_EQUALS(static_cast<int>(ImportProject::Type::VS_VCXPROJ), static_cast<int>(result));
+
+        const auto it = std::find_if(project.fileSettings.begin(), project.fileSettings.end(), [](const FileSettings &fs) {
+            return fs.filename().find("testcasemeta_main.cpp") != std::string::npos;
+        });
+        ASSERT(it != project.fileSettings.end());
+
+        // Must end with the fully-resolved accumulation
+        // "BASE_DEFINE=1;EXTRA_DEFINE=1" -- not a leftover literal
+        // "$(preprocessordefinitions)" macro reference, which would mean the
+        // case-mismatched self-reference was never recognized and substituted.
+        // (fs.defines is prefixed with the toolset's own predefined macros --
+        // e.g. _MSC_VER -- which this test does not otherwise care about.)
+        ASSERT(it->defines.find("$(preprocessordefinitions)") == std::string::npos);
+        const std::string expectedSuffix = ";BASE_DEFINE=1;EXTRA_DEFINE=1";
+        ASSERT(it->defines.size() >= expectedSuffix.size());
+        ASSERT_EQUALS(expectedSuffix, it->defines.substr(it->defines.size() - expectedSuffix.size()));
     }
 
     // TODO: test fsParseCommand()

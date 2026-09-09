@@ -3460,9 +3460,15 @@ void ImportProject::addMetadata(const tinyxml2::XMLElement *node, const Properti
 
     // Handle $(eName) self-references: some props files use property-style
     // accumulation (e.g. <DisableSpecificWarnings>$(DisableSpecificWarnings);4100
-    // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks.
-    findAndReplace(text, propSelfRef, original);
-    findAndReplace(text, propSelfRef, "");
+    // </DisableSpecificWarnings>) in ItemDefinitionGroup blocks. Property (and
+    // metadata) names are case-insensitive in MSBuild, matching the
+    // case-insensitive findAndReplaceCaseInsensitive() used for propSelfRef and
+    // metaSelfRef everywhere else in this function and in getMetadata() below --
+    // the plain, case-sensitive findAndReplace() (lib/utils.h, used elsewhere for
+    // unrelated literal placeholder substitution) would miss a self-reference
+    // spelled with different casing than eName.
+    findAndReplaceCaseInsensitive(text, propSelfRef, original);
+    findAndReplaceCaseInsensitive(text, propSelfRef, "");
     metadata[eName] = text;
     checkUnexpandedExpressions(text, eName);
 }
