@@ -380,7 +380,20 @@ private:
     /// -- so this set, not just that fixed name list, is what a macro's name
     /// is checked against. Cleared and repopulated at the top of each
     /// importVcxproj() call; empty (and therefore inert) before the first one.
-    std::set<std::string> mConfigInvariantProperties;
+    /// MSBuild property names are case-insensitive (PropertyGroup and
+    /// PropertiesMap itself, above, agree on this), so this uses the same
+    /// cppcheck::stricmp comparator PropertiesMap does -- otherwise "MyRoot"
+    /// set in one configuration's PropertyGroup and "myroot" set in another's
+    /// would be tracked as two unrelated names instead of one property, and
+    /// each could wrongly look config-invariant on its own even when the
+    /// property's real value differs by configuration. The priming walk
+    /// (see its comment in importVcxproj()) also tracks a property that only
+    /// SOME configurations set at all -- a value in one configuration and no
+    /// PropertyGroup for it whatsoever in another is itself a difference,
+    /// exactly like real MSBuild resolving it to "" wherever nothing sets
+    /// it -- rather than considering the property only where it happens to
+    /// be present.
+    std::set<std::string, cppcheck::stricmp> mConfigInvariantProperties;
     ImportGraph mImportGraph;
     /// True only while importVcxproj()'s discovery bootstrap scan (used when a
     /// project has no inline ProjectConfigurations) is walking the document. While

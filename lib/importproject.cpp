@@ -3633,8 +3633,12 @@ static void applyAdditionalOptions(MetadataMap &metadata)
 // priming every configuration's Properties pass before the real
 // per-configuration passes run, and holds every property name that came out
 // with the same value in all of them.
-static const std::set<std::string> &invariantItemPathProperties() {
-    static const std::set<std::string> props = {
+// MSBuild property names are case-insensitive -- $(msbuildprojectdirectory)
+// and $(MSBuildProjectDirectory) name the same built-in property to real
+// Visual Studio -- so this uses the same cppcheck::stricmp comparator
+// PropertiesMap itself does, not a plain (case-sensitive) std::set.
+static const std::set<std::string, cppcheck::stricmp> &invariantItemPathProperties() {
+    static const std::set<std::string, cppcheck::stricmp> props = {
         "MSBuildThisFileDirectory", "MSBuildThisFileFullPath", "MSBuildThisFile",
         "MSBuildThisFileName", "MSBuildThisFileExtension", "MSBuildThisFileDirectoryNoRoot",
         "MSBuildProjectDirectory", "MSBuildProjectFullPath", "MSBuildProjectFile",
@@ -3655,7 +3659,7 @@ static const std::set<std::string> &invariantItemPathProperties() {
 // Studio's C++ project system does not reliably resolve in a project item
 // path -- expandItemSpec() must not expand it, though (see its own comment)
 // that does not mean discarding the item.
-static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std::set<std::string> &configInvariant) {
+static bool hasOnlyInvariantItemPathVariables(const std::string &spec, const std::set<std::string, cppcheck::stricmp> &configInvariant) {
     std::size_t pos = 0;
     while ((pos = spec.find("$(", pos)) != std::string::npos) {
         std::size_t i = pos + 2;
@@ -4651,7 +4655,16 @@ bool ImportProject::importVcxproj(const std::string &filename,
     // the underlying Visual Studio restriction is about.
     mConfigInvariantProperties.clear();
     {
-        std::map<std::string, std::set<std::string>> valuesByProperty;
+        // Run the priming Properties pass once per configuration, keeping
+        // each configuration's full resulting property map -- needed below
+        // to tell "this property was never set by any PropertyGroup this
+        // project has" (fine: hasOnlyInvariantItemPathVariables() falls
+        // back to checking the OS environment for those, independently of
+        // mConfigInvariantProperties) apart from "this property is set in
+        // SOME of this project's configurations but not others" (not fine:
+        // that is itself a value that varies by configuration -- see below).
+        std::vector<PropertiesMap> perConfigProperties;
+        perConfigProperties.reserve(projectConfigurationList.size());
         for (const ProjectConfiguration &primePc : projectConfigurationList) {
             PropertiesMap primeProperties = originalVariables;
             primeProperties["Configuration"] = primePc.configuration;
@@ -4669,8 +4682,46 @@ bool ImportProject::importVcxproj(const std::string &filename,
             processElementChildren(rootnode, projectDir, primeProperties, primeMetadata, primeCompileList,
                                    projectConfigurationList, primeImportStack, EvalPhase::Properties);
 
-            for (const auto &prop : primeProperties)
-                valuesByProperty[prop.first].insert(prop.second);
+            perConfigProperties.push_back(std::move(primeProperties));
+        }
+
+        // Case-insensitive for the same reason mConfigInvariantProperties
+        // itself is (see its doc comment in importproject.h): each
+        // perConfigProperties entry above is itself a PropertiesMap, so
+        // within one configuration "MyRoot" and "myroot" already collapse
+        // to a single entry, but without this comparator here two DIFFERENT
+        // configurations spelling the same property differently -- one
+        // PropertyGroup writing "MyRoot", another "myroot" -- would be
+        // tracked as two unrelated single-value names instead of one
+        // property with (potentially) two different values, and each could
+        // wrongly look config-invariant on its own.
+        //
+        // The union of property names across every configuration -- not
+        // just each configuration's own names -- matters just as much: a
+        // property some, but not all, configurations set (e.g. a PropertyGroup
+        // conditioned on Configuration=='Debug' with no Release counterpart)
+        // is genuinely config-varying, exactly like real MSBuild treats it,
+        // since $(MyRoot) resolves to that PropertyGroup's value under Debug
+        // and to "" (PropertyValueExpander::lookup()'s own fallback for a
+        // name no PropertyGroup and no OS environment variable defines --
+        // see hasOnlyInvariantItemPathVariables()'s separate getenv() check
+        // for the case where an environment variable of the same name DOES
+        // make it invariant regardless) under every configuration that never
+        // sets it. Naively collecting only the values each configuration's
+        // own map happens to contain would miss this entirely: a property
+        // set in exactly one configuration would have exactly one recorded
+        // value there -- itself -- and look spuriously invariant.
+        std::set<std::string, cppcheck::stricmp> allPropertyNames;
+        for (const auto &configProperties : perConfigProperties) {
+            for (const auto &prop : configProperties)
+                allPropertyNames.insert(prop.first);
+        }
+        std::map<std::string, std::set<std::string>, cppcheck::stricmp> valuesByProperty;
+        for (const auto &configProperties : perConfigProperties) {
+            for (const auto &name : allPropertyNames) {
+                const auto it = configProperties.find(name);
+                valuesByProperty[name].insert(it != configProperties.end() ? it->second : std::string());
+            }
         }
         for (const auto &prop : valuesByProperty) {
             if (prop.second.size() == 1)
