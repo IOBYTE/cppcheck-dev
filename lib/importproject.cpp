@@ -2847,6 +2847,14 @@ bool ImportProject::hasName(const tinyxml2::XMLElement *node, const char *nodeNa
     return conditionIsTrue(node, properties);
 }
 
+bool ImportProject::hasNameAndAttribute(const tinyxml2::XMLElement *node, const char *nodeName, const char *attrName, const PropertiesMap &properties) {
+    const char *name = node->Name();
+    const char *attr = node->Attribute(attrName);
+    if (!name || !attr || std::strcmp(nodeName, name) != 0)
+        return false;
+    return conditionIsTrue(node, properties);
+}
+
 bool ImportProject::hasNameAndLabel(const tinyxml2::XMLElement *node, const char *nodeName, const char *nodeAttr, const PropertiesMap &properties) {
     const char *name = node->Name();
     const char *label = node->Attribute("Label");
@@ -3211,9 +3219,23 @@ void ImportProject::fsSetIncludePaths(FileSettings &fs, const std::string &basep
 
         if (s.find("$(") == std::string::npos) {
             s = Path::simplifyPath(basepath + s);
-        } else {
-            if (!simplifyPathWithVariables(s, properties))
-                continue;
+        } else if (!simplifyPathWithVariables(s, properties)) {
+            // A macro in this entry didn't resolve (simplifyPathWithVariables()
+            // already left `s` with the literal, unexpanded "$(...)" text in it --
+            // see its doc comment). Unlike the old ClCompile item-path behavior this
+            // does NOT silently drop the entry: a directory that can never exist is
+            // harmless to keep in includePaths (nothing will ever match it), but
+            // dropping it silently left the user with no way to find out why headers
+            // that should have been under it went unfound -- addDebug() alone isn't
+            // visible by default (see debugs' doc comment in importproject.h), and
+            // even --enable=missingInclude only reports the symptom (a header not
+            // found) with no link back to this cause. So the literal entry is kept
+            // AND a normal, always-visible message is recorded -- errors (unlike
+            // debugs) is printed unconditionally by the CLI, matching how the
+            // missingFile/missingIncludeExplicit fixes for ClCompile/ForcedIncludeFiles
+            // are also always-visible, not gated behind --debug.
+            errors.emplace_back("AdditionalIncludeDirectories entry has an unresolved macro, "
+                                "include path will not be found: '" + s + "'");
         }
         if (s.empty())
             continue;
@@ -4397,10 +4419,8 @@ ImportProject::ImportResult ImportProject::processImport(const std::string &file
         const std::string dirPart = (lastSlash != std::string::npos) ? filename.substr(0, lastSlash) : std::string();
         std::vector<std::string> matches;
         for (const std::string &candidate : listDirectoryFiles(dirPart)) {
-            if (matchesWildcardName(candidate, patternPart)) {
-                // cppcheck-suppress useStlAlgorithm
+            if (matchesWildcardName(candidate, patternPart))
                 matches.push_back(candidate);
-            }
         }
         std::sort(matches.begin(), matches.end());
         ImportResult result = ImportResult::Ok;
